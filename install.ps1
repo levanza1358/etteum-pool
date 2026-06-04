@@ -256,10 +256,11 @@ function Install-CliSymlink {
     New-Item -ItemType Directory -Path $target -Force | Out-Null
   }
 
-  # Copy etteum.ps1 to target
+  # Copy etteum.ps1 and etteum.cmd to target
   Copy-Item "$script:ProjectDir\etteum.ps1" "$target\etteum.ps1" -Force
+  Copy-Item "$script:ProjectDir\etteum.cmd" "$target\etteum.cmd" -Force
 
-  Ok "Installed etteum.ps1 to $target"
+  Ok "Installed etteum command to $target"
 
   if (-not ($env:Path -split ';' | Where-Object { $_ -eq $target })) {
     Warn "Add to PATH: `$env:Path = `"$target;`$env:Path`""
