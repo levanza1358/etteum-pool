@@ -43,6 +43,59 @@ fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+show_summary() {
+  printf "\n${C_BOLD}${C_BLUE}Etteum Pool${C_RESET} — AI Proxy Pool for Multiple Providers\n\n"
+
+  # Check what needs to be installed
+  local needs_git=false needs_bun=false needs_python=false
+  local total_size=0
+  local items=()
+
+  have git || { needs_git=true; items+=("  • Git                          ~50 MB"); ((total_size += 50)); }
+  have bun || { needs_bun=true; items+=("  • Bun runtime                  ~50 MB"); ((total_size += 50)); }
+
+  local has_python=false
+  for cand in python3.12 python3.11 python3.10 python3; do
+    if have "$cand"; then
+      has_python=true
+      break
+    fi
+  done
+  $has_python || { needs_python=true; items+=("  • Python 3.11+                 ~100 MB"); ((total_size += 100)); }
+
+  items+=("  • Node.js dependencies         ~200 MB")
+  ((total_size += 200))
+  items+=("  • Python packages (venv)       ~150 MB")
+  ((total_size += 150))
+  items+=("  • Playwright Chromium          ~175 MB")
+  ((total_size += 175))
+  items+=("  • Camoufox browser             ~150 MB")
+  ((total_size += 150))
+  items+=("  • Dashboard build              ~50 MB")
+  ((total_size += 50))
+
+  printf "${C_BOLD}This will install:${C_RESET}\n"
+  for item in "${items[@]}"; do
+    printf "%s\n" "$item"
+  done
+  printf "\n"
+  printf "${C_BOLD}Estimated total size:${C_RESET} ~%d MB\n" "$total_size"
+  printf "${C_BOLD}Install location:${C_RESET}     %s\n" "$INSTALL_DIR_DEFAULT"
+  printf "\n"
+
+  if $needs_git || $needs_bun || $needs_python; then
+    printf "${C_YELLOW}Note:${C_RESET} System dependencies (Git/Bun/Python) will be installed via package manager.\n"
+    printf "      This may require ${C_BOLD}sudo${C_RESET} password.\n\n"
+  fi
+
+  printf "Do you want to continue? [Y/n] "
+  read -r answer
+  case "$answer" in
+    [nN]|[nN][oO]) printf "Installation cancelled.\n"; exit 0 ;;
+  esac
+  printf "\n"
+}
+
 ensure_git() {
   if have git; then return; fi
   step "Installing git"
@@ -204,7 +257,9 @@ install_cli_symlink() {
 }
 
 main() {
-  printf "\n${C_BOLD}${C_BLUE}Etteum Pool Installer${C_RESET}  ${C_DIM}(%s)${C_RESET}\n\n" "$OS"
+  printf "\n${C_BOLD}${C_BLUE}Etteum Pool Installer${C_RESET}  ${C_DIM}(%s)${C_RESET}\n" "$OS"
+
+  show_summary
 
   ensure_git
   ensure_bun

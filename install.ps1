@@ -21,6 +21,72 @@ function Ok  ([string]$msg) { Write-Host "ok  " -ForegroundColor Green -NoNewlin
 
 function Have([string]$cmd) { return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
+function Show-Summary {
+    Write-Host ""
+    Write-Host "Etteum Pool" -ForegroundColor Cyan -NoNewline
+    Write-Host " — AI Proxy Pool for Multiple Providers" -ForegroundColor White
+    Write-Host ""
+
+    # Check what needs to be installed
+    $needsGit = -not (Have git)
+    $needsBun = -not (Have bun)
+    $needsPython = -not (Have python) -and -not (Have python3)
+
+    $totalSize = 0
+    $items = @()
+
+    if ($needsGit) {
+        $items += "  • Git                          ~50 MB"
+        $totalSize += 50
+    }
+    if ($needsBun) {
+        $items += "  • Bun runtime                  ~50 MB"
+        $totalSize += 50
+    }
+    if ($needsPython) {
+        $items += "  • Python 3.11+                 ~100 MB"
+        $totalSize += 100
+    }
+
+    $items += "  • Node.js dependencies         ~200 MB"
+    $totalSize += 200
+    $items += "  • Python packages (venv)       ~150 MB"
+    $totalSize += 150
+    $items += "  • Playwright Chromium          ~175 MB"
+    $totalSize += 175
+    $items += "  • Camoufox browser             ~150 MB"
+    $totalSize += 150
+    $items += "  • Dashboard build              ~50 MB"
+    $totalSize += 50
+
+    Write-Host "This will install:" -ForegroundColor White
+    foreach ($item in $items) {
+        Write-Host $item
+    }
+    Write-Host ""
+    Write-Host "Estimated total size: " -ForegroundColor White -NoNewline
+    Write-Host "~$totalSize MB" -ForegroundColor Yellow
+    Write-Host "Install location:     " -ForegroundColor White -NoNewline
+    Write-Host $DefaultDir
+    Write-Host ""
+
+    if ($needsGit -or $needsBun -or $needsPython) {
+        Write-Host "Note: " -ForegroundColor Yellow -NoNewline
+        Write-Host "System dependencies (Git/Bun/Python) will be installed via package manager."
+        Write-Host "      This may require " -NoNewline
+        Write-Host "administrator privileges" -ForegroundColor Yellow -NoNewline
+        Write-Host "."
+        Write-Host ""
+    }
+
+    $response = Read-Host "Do you want to continue? [Y/n]"
+    if ($response -match '^[nN]') {
+        Write-Host "Installation cancelled." -ForegroundColor Yellow
+        exit 0
+    }
+    Write-Host ""
+}
+
 function Add-PathOnce([string]$dir) {
   if (-not (Test-Path $dir)) { return }
   if (-not ($env:Path -split ';' | Where-Object { $_ -eq $dir })) {
@@ -204,6 +270,8 @@ function Main {
   Write-Host ""
   Write-Host "Etteum Pool Installer (Windows)" -ForegroundColor Blue
   Write-Host ""
+
+  Show-Summary
 
   Ensure-Git
   Ensure-Bun
