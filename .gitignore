@@ -1,0 +1,74 @@
+# dependencies (bun install)
+node_modules
+
+# python venv
+.venv/
+__pycache__/
+*.pyc
+
+# sensitive data
+scripts/cookies/
+
+# local probe / intercept scripts (reverse-engineering helpers, not part of the proxy)
+scripts/probe-*.ts
+scripts/dump-*.ts
+scripts/qoder-intercept.mjs
+scripts/test-kiro-pro-inference.ts
+test/codex_direct.ts
+
+# output
+out
+dist
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+.poolprox.log
+.poolprox.pid
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# Claude Code local project overrides
+.claude/settings.local.json
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# Database
+data/
+
+# Drizzle migrations
+drizzle/
+
+# Bun lockfile (optional - some prefer to commit this)
+# bun.lock
+
+# Debug artifacts
+*.png
+EOF
+
+
+# Playwright MCP runtime
+.playwright-mcp/
+
+# Nested git repos (external services)
+services/windsurf-api/
