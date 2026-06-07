@@ -176,6 +176,40 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
   const toolBlocks = new Map<number, number>();
   const closedToolBlocks = new Set<number>();
   let stopReason = "end_turn";
+  let usageFromUpstream = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+  // Estimate input tokens from request content (system + messages)
+  function estimateInputTokens(): number {
+    let tokens = 0;
+    if (request.system) {
+      const sysText = typeof request.system === "string"
+        ? request.system
+        : request.system.map((b: any) => b?.text || "").join("");
+      tokens += Math.max(1, Math.ceil(sysText.length / 4));
+    }
+    for (const msg of request.messages || []) {
+      if (typeof msg.content === "string") {
+        tokens += Math.max(1, Math.ceil(msg.content.length / 4));
+      } else if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block?.type === "text" && typeof block.text === "string") {
+            tokens += Math.max(1, Math.ceil(block.text.length / 4));
+          } else if (block?.type === "tool_result") {
+            const text = typeof block.content === "string"
+              ? block.content
+              : Array.isArray(block.content)
+                ? block.content.map((b: any) => b?.text || "").join("")
+                : "";
+            tokens += Math.max(1, Math.ceil(text.length / 4));
+          }
+        }
+      }
+      tokens += 4; // role overhead
+    }
+    return Math.max(1, tokens);
+  }
+
+  const estimatedInputTokens = estimateInputTokens();
 
   function event(name: string, data: unknown) {
     return encoder.encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -198,7 +232,7 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
             content: [],
             stop_reason: null,
             stop_sequence: null,
-            usage: { input_tokens: 0, output_tokens: 0 },
+            usage: { input_tokens: estimatedInputTokens, output_tokens: 0 },
           },
         }));
       };
@@ -238,6 +272,15 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
               const delta = chunk?.choices?.[0]?.delta || {};
               const reasoning = delta.reasoning_content || "";
               const text = delta.content || "";
+
+              // Capture upstream usage from final chunk
+              if (chunk?.usage) {
+                usageFromUpstream = {
+                  prompt_tokens: Number(chunk.usage.prompt_tokens || 0),
+                  completion_tokens: Number(chunk.usage.completion_tokens || 0),
+                  total_tokens: Number(chunk.usage.total_tokens || 0),
+                };
+              }
 
               if (reasoning) {
                 if (!thinkingBlockOpen) {
@@ -328,10 +371,16 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
             controller.enqueue(event("content_block_stop", { type: "content_block_stop", index: toolBlockIndex }));
           }
         }
+        const outputTokens = usageFromUpstream.completion_tokens > 0
+          ? usageFromUpstream.completion_tokens
+          : Math.max(1, Math.ceil(index / 4));
+        const inputTokens = usageFromUpstream.prompt_tokens > 0
+          ? usageFromUpstream.prompt_tokens
+          : estimatedInputTokens;
         controller.enqueue(event("message_delta", {
           type: "message_delta",
           delta: { stop_reason: stopReason, stop_sequence: null },
-          usage: { output_tokens: Math.max(1, Math.ceil(index / 4)) },
+          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
         }));
         controller.enqueue(event("message_stop", { type: "message_stop" }));
         controller.close();

@@ -14,6 +14,7 @@ import {
 import { isBadUpstreamRequest, isInvalidModelError } from "./errors";
 import { prepareLogBody } from "./logging";
 import { eq, sql } from "drizzle-orm";
+import { providerList } from "./providers/registry";
 
 export const proxyRouter = new Hono();
 
@@ -99,6 +100,20 @@ function normalizeModelId(model: string): string {
   return model.replace(/claude-sonet/gi, "claude-sonnet");
 }
 
+/**
+ * Fallback model override: any model not explicitly owned by a non-fallback
+ * provider gets rewritten to qd-Qwen3.7-Max. This lets the assistant / Anthropic
+ * clients send requests with their native model names (claude-sonnet-*, etc.)
+ * and have them transparently routed to Qwen3.7-Max via Qoder.
+ */
+function resolveModelId(model: string): string {
+  const normalized = normalizeModelId(model);
+  for (const provider of providerList) {
+    if (!provider.isFallback && provider.ownsModel(normalized)) return normalized;
+  }
+  return "qd-Qwen3.7-Max";
+}
+
 function computeCredits(
   provider: keyof typeof providers,
   model: string,
@@ -154,6 +169,26 @@ function extractUsageFromSsePayload(payload: string) {
   }
 }
 
+/** Accumulate streamed text content across SSE chunks for token estimation */
+function extractStreamContent(payload: string): string {
+  if (!payload || payload === "[DONE]") return "";
+  try {
+    const parsed = JSON.parse(payload);
+    const choice = parsed.choices?.[0];
+    return String(
+      choice?.delta?.content ??
+      choice?.message?.content ??
+      choice?.text ??
+      parsed?.delta?.content ??
+      parsed?.content ??
+      parsed?.text ??
+      ""
+    );
+  } catch {
+    return "";
+  }
+}
+
 function estimateTokensFromText(text: string): number {
   if (!text) return 0;
   return Math.max(1, Math.ceil(text.length / 4));
@@ -161,7 +196,25 @@ function estimateTokensFromText(text: string): number {
 
 function estimateMessagesTokens(messages: ChatCompletionRequest["messages"]): number {
   return (messages || []).reduce((total, msg) => {
-    const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content || "");
+    let content = "";
+    if (typeof msg.content === "string") {
+      content = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      content = (msg.content as any[])
+        .map((block) => {
+          if (block?.type === "text" && typeof block.text === "string") return block.text;
+          if (block?.type === "tool_result") {
+            if (typeof block.content === "string") return block.content;
+            if (Array.isArray(block.content)) {
+              return block.content.map((b: any) => b?.text || "").join("");
+            }
+          }
+          return JSON.stringify(block || "");
+        })
+        .join("");
+    } else {
+      content = JSON.stringify(msg.content || "");
+    }
     return total + estimateTokensFromText(content) + 4;
   }, 0);
 }
@@ -231,9 +284,13 @@ function wrapStreamWithUsageFinalizer(
       const trimmed = line.trim();
       if (!trimmed.startsWith("data:")) continue;
       const payload = trimmed.startsWith("data: ") ? trimmed.slice(6) : trimmed.slice(5);
+
+      // Always extract content for estimation, even if no usage field
+      const content = extractStreamContent(payload.trim());
+      if (content) streamedContent += content;
+
       const usage = extractUsageFromSsePayload(payload.trim());
       if (!usage) continue;
-      streamedContent += usage.content || "";
       promptTokens = usage.promptTokens || promptTokens;
       completionTokens = usage.completionTokens || completionTokens;
       totalTokens = usage.totalTokens || totalTokens;
@@ -505,6 +562,7 @@ proxyRouter.post("/v1/chat/completions", async (c) => {
     );
   }
 
+  body.model = resolveModelId(body.model);
   const isStream = body.stream === true;
 
   try {
@@ -583,6 +641,7 @@ proxyRouter.post("/v1/messages", async (c) => {
     return c.json({ type: "error", error: { type: "invalid_request_error", message: "model is required" } }, 400);
   }
 
+  body.model = resolveModelId(body.model);
   const openAIRequest = anthropicToOpenAI(body);
 
   try {
