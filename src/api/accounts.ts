@@ -661,6 +661,67 @@ accountsRouter.post("/bulk", async (c) => {
 });
 
 /**
+ * POST /api/accounts/filter - Filter accounts that don't exist yet
+ *
+ * Body: { emails: ["email:password", ...] }
+ * Returns per-provider breakdown of which accounts are missing.
+ */
+accountsRouter.post("/filter", async (c) => {
+  const body = await c.req.json<{ emails: string[] }>();
+
+  if (!body.emails || !Array.isArray(body.emails)) {
+    return c.json({ error: "emails array is required" }, 400);
+  }
+
+  // Parse email:password pairs
+  const parsed: Array<{ email: string; password: string }> = [];
+  for (const line of body.emails) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const sepIdx = trimmed.indexOf(":");
+    if (sepIdx === -1) continue;
+    const email = trimmed.slice(0, sepIdx).trim().toLowerCase();
+    const password = trimmed.slice(sepIdx + 1).trim();
+    if (email && password) {
+      parsed.push({ email, password });
+    }
+  }
+
+  if (parsed.length === 0) {
+    return c.json({ error: "No valid email:password pairs found" }, 400);
+  }
+
+  // Get all existing accounts
+  const allAccounts = await db.select({ email: accounts.email, provider: accounts.provider }).from(accounts);
+
+  // Build a set of "provider:email" for fast lookup
+  const existingSet = new Set(allAccounts.map((a) => `${a.provider}:${a.email.toLowerCase()}`));
+
+  const allProviders = ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder"];
+
+  // For each provider, find which emails are missing
+  const result: Record<string, Array<{ email: string; password: string }>> = {};
+  let totalMissing = 0;
+
+  for (const provider of allProviders) {
+    const missing: Array<{ email: string; password: string }> = [];
+    for (const { email, password } of parsed) {
+      if (!existingSet.has(`${provider}:${email}`)) {
+        missing.push({ email, password });
+      }
+    }
+    result[provider] = missing;
+    totalMissing += missing.length;
+  }
+
+  return c.json({
+    totalInput: parsed.length,
+    totalMissing,
+    providers: result,
+  });
+});
+
+/**
  * PATCH /api/accounts/:id - Update account
  */
 accountsRouter.patch("/:id", async (c) => {

@@ -2,14 +2,14 @@
 # Etteum Pool installer for Linux and macOS
 #
 # One-command install:
-#   curl -fsSL https://raw.githubusercontent.com/priyo000/etteum-pool/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/levanza1358/etteum-pool/main/install.sh | bash
 #
 # Or, after cloning:
 #   bash install.sh
 
 set -euo pipefail
 
-REPO_URL="${ETTEUM_REPO:-https://github.com/priyo000/etteum-pool.git}"
+REPO_URL="${ETTEUM_REPO:-https://github.com/levanza1358/etteum-pool.git}"
 INSTALL_DIR_DEFAULT="${ETTEUM_HOME:-$HOME/etteum-pool}"
 
 C_RESET='\033[0m'

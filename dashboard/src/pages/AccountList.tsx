@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { ArrowLeft, Search, Trash2, RefreshCw, RotateCcw, ExternalLink, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle2, XCircle } from "lucide-react";
+import { ArrowLeft, Search, Trash2, RefreshCw, RotateCcw, ExternalLink, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle2, XCircle, CheckSquare, Square, MinusSquare, Flame, Power } from "lucide-react";
 import { formatDateTimeID } from "@/lib/utils";
 import { useTimedMessage } from "@/hooks/useTimedMessage";
 import { useWsEvent } from "@/hooks/useWebSocket";
@@ -140,6 +140,8 @@ export default function AccountList() {
   const [statusFilter, setStatusFilter] = useState<Status | "all">("all");
   const [sortKey, setSortKey] = useState<SortKey>("email");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
 
   function handleSort(key: SortKey) {
     if (sortKey === key) {
@@ -233,6 +235,108 @@ export default function AccountList() {
       }));
       showError(err);
     }
+  }
+
+  // Selection helpers
+  function toggleSelect(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    const pageIds = filtered.slice((page - 1) * perPage, page * perPage).map((a) => a.id);
+    const allSelected = pageIds.every((id) => selectedIds.has(id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        pageIds.forEach((id) => next.delete(id));
+      } else {
+        pageIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
+
+  // Bulk actions
+  async function handleBulkRetry() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setBulkLoading(true);
+    try {
+      await loginAccounts(ids);
+      showSuccess(`Queued ${ids.length} accounts for retry.`);
+      clearSelection();
+      await load();
+    } catch (err) { showError(err); }
+    finally { setBulkLoading(false); }
+  }
+
+  async function handleBulkWarmup() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setBulkLoading(true);
+    try {
+      for (const id of ids) {
+        await warmupAccount(id);
+      }
+      showSuccess(`WarmUp queued for ${ids.length} accounts.`);
+      clearSelection();
+      await load();
+    } catch (err) { showError(err); }
+    finally { setBulkLoading(false); }
+  }
+
+  async function handleBulkEnable() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setBulkLoading(true);
+    try {
+      for (const id of ids) {
+        await toggleAccountEnabled(id, true);
+      }
+      showSuccess(`Enabled ${ids.length} accounts.`);
+      clearSelection();
+      await load();
+    } catch (err) { showError(err); }
+    finally { setBulkLoading(false); }
+  }
+
+  async function handleBulkDisable() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setBulkLoading(true);
+    try {
+      for (const id of ids) {
+        await toggleAccountEnabled(id, false);
+      }
+      showSuccess(`Disabled ${ids.length} accounts.`);
+      clearSelection();
+      await load();
+    } catch (err) { showError(err); }
+    finally { setBulkLoading(false); }
+  }
+
+  async function handleBulkDelete() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} selected accounts? This cannot be undone.`)) return;
+    setBulkLoading(true);
+    try {
+      for (const id of ids) {
+        await deleteAccount(id);
+      }
+      showSuccess(`Deleted ${ids.length} accounts.`);
+      clearSelection();
+      await load();
+    } catch (err) { showError(err); }
+    finally { setBulkLoading(false); }
   }
 
   const filtered = useMemo(() => {
@@ -335,6 +439,36 @@ export default function AccountList() {
         </div>
       </div>
 
+      {/* Bulk Action Toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-2 flex-wrap rounded-lg border border-[var(--primary)]/30 bg-[var(--primary)]/5 px-4 py-2.5">
+          <span className="text-sm font-medium text-[var(--foreground)] mr-1">
+            {selectedIds.size} selected
+          </span>
+          <div className="h-4 w-px bg-[var(--border)]" />
+          <Button variant="outline" size="sm" onClick={handleBulkRetry} disabled={bulkLoading}>
+            <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Retry
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleBulkWarmup} disabled={bulkLoading}>
+            <Flame className="w-3.5 h-3.5 mr-1.5 text-[var(--warning)]" /> Warmup
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleBulkEnable} disabled={bulkLoading}>
+            <CheckCircle2 className="w-3.5 h-3.5 mr-1.5 text-[var(--success)]" /> Enable
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleBulkDisable} disabled={bulkLoading}>
+            <XCircle className="w-3.5 h-3.5 mr-1.5 text-[var(--muted-foreground)]" /> Disable
+          </Button>
+          <div className="h-4 w-px bg-[var(--border)]" />
+          <Button variant="outline" size="sm" onClick={handleBulkDelete} disabled={bulkLoading} className="text-[var(--error)] border-[var(--error)]/30 hover:bg-[var(--error)]/10">
+            <Trash2 className="w-3.5 h-3.5 mr-1.5" /> Delete
+          </Button>
+          <div className="flex-1" />
+          <Button variant="ghost" size="sm" onClick={clearSelection} disabled={bulkLoading}>
+            Clear
+          </Button>
+        </div>
+      )}
+
       {/* Table */}
       <Card className="border-[var(--border)]">
         <CardContent className="p-0">
@@ -342,6 +476,18 @@ export default function AccountList() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[var(--border)]">
+                  <th className="w-10 p-4">
+                    <button onClick={toggleSelectAll} className="text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors" title="Select all on page">
+                      {(() => {
+                        const pageIds = filtered.slice((page - 1) * perPage, page * perPage).map((a) => a.id);
+                        const allSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
+                        const someSelected = pageIds.some((id) => selectedIds.has(id));
+                        if (allSelected) return <CheckSquare className="w-4 h-4 text-[var(--primary)]" />;
+                        if (someSelected) return <MinusSquare className="w-4 h-4 text-[var(--primary)]" />;
+                        return <Square className="w-4 h-4" />;
+                      })()}
+                    </button>
+                  </th>
                   <th className="text-left text-xs font-medium text-[var(--muted-foreground)] uppercase tracking-wide p-4 cursor-pointer select-none hover:text-[var(--foreground)]" onClick={() => handleSort("email")}>
                     <span className="inline-flex items-center">Email<SortIcon column="email" /></span>
                   </th>
@@ -364,7 +510,14 @@ export default function AccountList() {
                 {filtered.slice((page - 1) * perPage, page * perPage).map((account) => {
                   const isEnabled = account.enabled !== false;
                   return (
-                  <tr key={account.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-[var(--secondary)]/50 ${isEnabled ? "" : "opacity-50"}`}>
+                  <tr key={account.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-[var(--secondary)]/50 ${isEnabled ? "" : "opacity-50"} ${selectedIds.has(account.id) ? "bg-[var(--primary)]/5" : ""}`}>
+                    <td className="w-10 p-4">
+                      <button onClick={() => toggleSelect(account.id)} className="text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors">
+                        {selectedIds.has(account.id)
+                          ? <CheckSquare className="w-4 h-4 text-[var(--primary)]" />
+                          : <Square className="w-4 h-4" />}
+                      </button>
+                    </td>
                     <td className="p-4 text-sm text-[var(--foreground)]">
                       <div>{account.email}</div>
                       {account.errorMessage && <div className="text-xs text-[var(--error)] mt-1 line-clamp-1" title={account.errorMessage}>{account.errorMessage}</div>}
@@ -417,7 +570,7 @@ export default function AccountList() {
                   );
                 })}
                 {!loading && filtered.length === 0 && (
-                  <tr><td colSpan={6} className="p-8 text-center text-sm text-[var(--muted-foreground)]">No accounts found</td></tr>
+                  <tr><td colSpan={7} className="p-8 text-center text-sm text-[var(--muted-foreground)]">No accounts found</td></tr>
                 )}
               </tbody>
             </table>

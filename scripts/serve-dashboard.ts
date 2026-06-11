@@ -10,8 +10,10 @@
  *   DASHBOARD_PORT (default: 1931)
  */
 
+import { fileURLToPath } from "node:url";
+
 const port = Number(process.env.DASHBOARD_PORT) || 1931;
-const distDir = new URL("../dashboard/dist", import.meta.url).pathname;
+const distDir = fileURLToPath(new URL("../dashboard/dist", import.meta.url));
 const indexFile = `${distDir}/index.html`;
 
 // Check if dashboard is built

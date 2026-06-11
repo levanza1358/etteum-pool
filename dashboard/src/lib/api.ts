@@ -710,3 +710,41 @@ export async function testByokProvider(
     body: JSON.stringify(model ? { model } : {})
   });
 }
+
+// --- Backup / Export / Import ---
+
+export async function exportBackup(): Promise<any> {
+  return fetchApi("/api/backup/export");
+}
+
+export async function importBackup(data: any, mode: "merge" | "replace" = "merge"): Promise<any> {
+  return fetchApi(`/api/backup/import?mode=${mode}`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+// --- Account Filter ---
+
+export async function filterAccounts(emails: string[]): Promise<{
+  totalInput: number;
+  totalMissing: number;
+  providers: Record<string, Array<{ email: string; password: string }>>;
+}> {
+  return fetchApi("/api/accounts/filter", {
+    method: "POST",
+    body: JSON.stringify({ emails }),
+  });
+}
+
+export async function bulkCreateAccounts(accounts: Array<{ provider: string; email: string; password: string }>) {
+  return fetchApi<{
+    total: number;
+    success: number;
+    failed: number;
+    results: Array<{ email: string; success: boolean; error?: string }>;
+  }>("/api/accounts/bulk", {
+    method: "POST",
+    body: JSON.stringify({ accounts }),
+  });
+}
