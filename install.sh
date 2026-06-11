@@ -9,6 +9,12 @@
 
 set -euo pipefail
 
+# Auto-yes: skip prompts when piped or --yes flag
+AUTO_YES=false
+if [[ ! -t 0 ]] || [[ "${1:-}" == "--yes" ]] || [[ "${1:-}" == "-y" ]]; then
+  AUTO_YES=true
+fi
+
 REPO_URL="${ETTEUM_REPO:-https://github.com/levanza1358/etteum-pool.git}"
 INSTALL_DIR_DEFAULT="${ETTEUM_HOME:-$HOME/etteum-pool}"
 
@@ -88,12 +94,16 @@ show_summary() {
     printf "      This may require ${C_BOLD}sudo${C_RESET} password.\n\n"
   fi
 
-  printf "Do you want to continue? [Y/n] "
-  read -r answer
-  case "$answer" in
-    [nN]|[nN][oO]) printf "Installation cancelled.\n"; exit 0 ;;
-  esac
-  printf "\n"
+  if $AUTO_YES; then
+    printf "Auto-confirming (piped or --yes flag)\n\n"
+  else
+    printf "Do you want to continue? [Y/n] "
+    read -r answer
+    case "$answer" in
+      [nN]|[nN][oO]) printf "Installation cancelled.\n"; exit 0 ;;
+    esac
+    printf "\n"
+  fi
 }
 
 ensure_git() {
