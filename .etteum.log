@@ -38,3 +38,72 @@
 [CB-DEBUG] Request body: {"messages":[{"role":"user","content":"hi"}],"model":"claude-haiku-4.5","stream":true}
 [CB-DEBUG] Headers: ["Accept","Content-Type","X-Requested-With","X-Conversation-ID","X-Conversation-Request-ID","X-Conversation-Message-ID","X-Request-ID","X-Domain","X-Product","User-Agent","Authorization","X-Api-Key","Cookie"]
 --> POST /api/models/test [32m200[0m 614ms
+[WS] Client connected (total: 1)
+<-- POST /api/keys/test
+--> POST /api/keys/test [32m200[0m 3ms
+<-- GET /api/stats/usage?hours=24&timeZone=Asia%2FBangkok
+--> GET /api/stats/usage?hours=24&timeZone=Asia%2FBangkok [32m200[0m 7ms
+<-- GET /api/stats?hours=24
+--> GET /api/stats?hours=24 [32m200[0m 7ms
+<-- GET /api/stats/models?hours=24
+--> GET /api/stats/models?hours=24 [32m200[0m 2ms
+<-- GET /api/stats?range=all
+--> GET /api/stats?range=all [32m200[0m 3ms
+<-- GET /api/stats/models?range=all
+--> GET /api/stats/models?range=all [32m200[0m 2ms
+<-- GET /api/accounts
+--> GET /api/accounts [32m200[0m 39ms
+<-- GET /api/auth/queue
+--> GET /api/auth/queue [32m200[0m 0ms
+<-- GET /api/accounts/warmup-queue
+--> GET /api/accounts/warmup-queue [32m200[0m 0ms
+<-- GET /api/auth/warmup-schedule
+--> GET /api/auth/warmup-schedule [32m200[0m 1ms
+<-- GET /api/settings
+--> GET /api/settings [32m200[0m 2ms
+<-- GET /api/accounts/byok
+--> GET /api/accounts/byok [32m200[0m 2ms
+<-- GET /api/accounts
+--> GET /api/accounts [32m200[0m 38ms
+<-- GET /api/accounts
+--> GET /api/accounts [32m200[0m 45ms
+<-- GET /api/auth/queue
+--> GET /api/auth/queue [32m200[0m 1ms
+<-- GET /api/accounts/warmup-queue
+--> GET /api/accounts/warmup-queue [32m200[0m 0ms
+<-- GET /api/auth/warmup-schedule
+--> GET /api/auth/warmup-schedule [32m200[0m 1ms
+<-- GET /api/settings
+--> GET /api/settings [32m200[0m 1ms
+<-- GET /api/accounts/byok
+--> GET /api/accounts/byok [32m200[0m 2ms
+<-- POST /api/auth/warmup-all
+--> POST /api/auth/warmup-all [32m200[0m 23ms
+<-- GET /api/accounts
+--> GET /api/accounts [32m200[0m 35ms
+<-- GET /api/auth/queue
+--> GET /api/auth/queue [32m200[0m 0ms
+<-- GET /api/accounts/warmup-queue
+--> GET /api/accounts/warmup-queue [32m200[0m 1ms
+<-- GET /api/auth/warmup-schedule
+--> GET /api/auth/warmup-schedule [32m200[0m 1ms
+<-- GET /api/settings
+--> GET /api/settings [32m200[0m 6ms
+<-- GET /api/accounts/byok
+--> GET /api/accounts/byok [32m200[0m 1ms
+<-- GET /api/accounts/warmup-queue
+--> GET /api/accounts/warmup-queue [32m200[0m 1ms
+<-- GET /api/accounts/warmup-queue
+--> GET /api/accounts/warmup-queue [32m200[0m 1ms
+<-- GET /api/accounts
+--> GET /api/accounts [32m200[0m 46ms
+<-- GET /api/auth/queue
+--> GET /api/auth/queue [32m200[0m 0ms
+<-- GET /api/auth/warmup-schedule
+--> GET /api/auth/warmup-schedule [32m200[0m 0ms
+<-- GET /api/settings
+--> GET /api/settings [32m200[0m 1ms
+<-- GET /api/accounts/byok
+--> GET /api/accounts/byok [32m200[0m 1ms
+<-- GET /api/accounts
+--> GET /api/accounts [32m200[0m 43ms

@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import UsageChart from "./UsageChart";
 import { formatNumber, parseUtcDate, modelColor } from "@/lib/utils";
-import { fetchUsage, fetchDashboardStats, fetchModelUsage } from "@/lib/api";
+import { fetchUsage } from "@/lib/api";
 import { useWsEvent } from "@/hooks/useWebSocket";
 
 interface TokenStats {
@@ -40,37 +40,53 @@ const defaultStats: TokenStats = {
 const defaultModelUsage: ModelUsage[] = [];
 
 /**
- * Backend buckets usage by the browser timezone and returns each bucket start as UTC ISO.
- * The browser uses local-time bucket generation so daily/monthly ranges align with the UI date.
+ * How many hours of data to request from the backend.
+ *
+ * We intentionally over-fetch so that the current local-timezone period is
+ * fully covered regardless of the user's UTC offset.  The extra rows are
+ * discarded during local-bucket mapping — only rows that land inside the
+ * visible buckets contribute to the chart AND the summary cards.
  */
-
-function getChartHours(period: string) {
-  if (period === "1d") return 24;
-  if (period === "7d") return 24 * 7;
-  if (period === "30d") return 24 * 30;
-  return null;
+function getChartHours(period: string): number | null {
+  if (period === "1d") return 48;
+  if (period === "7d") return 24 * 8;
+  if (period === "30d") return 24 * 31;
+  return null; // "all"
 }
 
 function modelKey(row: { provider?: string; model?: string }) {
   return `${row.provider || "unknown"}/${row.model || "unknown"}`;
 }
 
-/** Truncate a Date to the start of its hour in the user's timezone */
+// ─── Local-timezone bucket helpers ──────────────────────────────────────────
+
+/** Truncate a Date to the start of its hour in the user's local timezone */
 function truncHourLocal(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()).getTime();
 }
 
-/** Truncate a Date to the start of its day in the user's timezone */
+/** Truncate a Date to the start of its day in the user's local timezone */
 function truncDayLocal(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 
-/** Truncate a Date to the start of its month in the user's timezone */
+/** Truncate a Date to the start of its month in the user's local timezone */
 function truncMonthLocal(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), 1).getTime();
 }
 
-/** Convert a backend hour key (ISO UTC) to a numeric bucket key (epoch ms) */
+/**
+ * Snap a UTC epoch (from the backend bucket key) to the corresponding
+ * local-timezone bucket epoch.
+ */
+function snapToLocalBucket(utcEpoch: number, period: string): number {
+  const d = new Date(utcEpoch);
+  if (period === "1d") return truncHourLocal(d);
+  if (period === "7d" || period === "30d") return truncDayLocal(d);
+  return truncMonthLocal(d);
+}
+
+/** Convert a backend hour key (ISO UTC) to a numeric epoch (ms) */
 function parseBucketKey(isoKey: string): number {
   return parseUtcDate(isoKey).getTime();
 }
@@ -87,62 +103,152 @@ function formatLabel(epoch: number, period: string): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-/** Generate ordered bucket epochs for the chart */
-function generateBuckets(period: string, hours: number): number[] {
-  const now = Date.now();
+/**
+ * Generate ordered bucket epochs for the chart, all in the user's local
+ * timezone so labels read naturally.
+ *
+ * - **1d** — 25 hourly buckets for *today* (00:00 → 00:00 next day).
+ * - **7d** — 7 daily buckets ending today.
+ * - **30d** — 30 daily buckets ending today.
+ * - **all** — last 12 monthly buckets.
+ */
+function generateBuckets(period: string): number[] {
+  const now = new Date();
   const buckets: number[] = [];
 
   if (period === "1d") {
-    const start = truncHourLocal(new Date(now - hours * 3600_000));
-    for (let i = 0; i <= hours; i++) {
-      buckets.push(start + i * 3600_000);
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    for (let i = 0; i <= 24; i++) {
+      buckets.push(todayStart + i * 3600_000);
     }
     return buckets;
   }
 
   if (period === "7d" || period === "30d") {
     const days = period === "7d" ? 7 : 30;
-    const start = new Date(truncDayLocal(new Date(now - days * 86400_000)));
-    for (let i = 0; i <= days; i++) {
-      buckets.push(new Date(start.getFullYear(), start.getMonth(), start.getDate() + i).getTime());
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      buckets.push(d.getTime());
     }
     return buckets;
   }
 
-  // all
-  const d = new Date();
+  // "all" — last 12 months
   for (let i = 11; i >= 0; i--) {
-    buckets.push(truncMonthLocal(new Date(d.getFullYear(), d.getMonth() - i, 1)));
+    buckets.push(new Date(now.getFullYear(), now.getMonth() - i, 1).getTime());
   }
   return buckets;
 }
 
-function rowsToModelChart(rows: Array<{ hour: string; provider?: string; model?: string; tokens?: number }>, period: string, hours: number) {
-  const models = Array.from(new Set(rows.map(modelKey)));
-  const bucketEpochs = generateBuckets(period, hours);
+/** A single backend usage row */
+interface UsageRow {
+  hour: string;
+  provider?: string;
+  model?: string;
+  tokens?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  credits?: number;
+  count?: number;
+}
+
+/**
+ * Filter backend rows to only those that fall inside the visible buckets,
+ * then build chart data, stats totals, and per-model breakdown — all from
+ * the **same** filtered dataset so the numbers always match the chart.
+ */
+function processUsageData(rows: UsageRow[], period: string) {
+  const bucketEpochs = generateBuckets(period);
   const bucketSet = new Set(bucketEpochs);
 
-  // Initialize all buckets
+  // ── 1. Identify which rows land inside visible buckets ────────────
+  const visibleRows: Array<UsageRow & { localEpoch: number }> = [];
+  for (const row of rows) {
+    const utcEpoch = parseBucketKey(row.hour);
+    const localEpoch = snapToLocalBucket(utcEpoch, period);
+    if (bucketSet.has(localEpoch)) {
+      visibleRows.push({ ...row, localEpoch });
+    }
+  }
+
+  // ── 2. Build chart data (model × bucket) ──────────────────────────
+  const models = Array.from(new Set(visibleRows.map(modelKey)));
   const byEpoch = new Map<number, Record<string, number | string>>();
   for (const epoch of bucketEpochs) {
-    const entry: Record<string, number | string> = { hour: String(epoch), label: formatLabel(epoch, period) };
+    const entry: Record<string, number | string> = {
+      hour: String(epoch),
+      label: formatLabel(epoch, period),
+    };
     for (const model of models) entry[model] = 0;
     byEpoch.set(epoch, entry);
   }
-
-  // Map backend data to buckets
-  for (const row of rows) {
-    const epoch = parseBucketKey(row.hour);
+  for (const row of visibleRows) {
     const model = modelKey(row);
-    // Find the matching bucket (exact match since backend truncates the same way)
-    const bucket = byEpoch.get(epoch);
-    if (bucket) {
-      bucket[model] = Number(bucket[model] || 0) + Number(row.tokens || 0);
-    }
-    // Data outside the bucket range is simply ignored (old data)
+    const bucket = byEpoch.get(row.localEpoch)!;
+    bucket[model] = Number(bucket[model] || 0) + Number(row.tokens || 0);
   }
+  const chartData = bucketEpochs.map((epoch) => byEpoch.get(epoch)!);
 
-  return bucketEpochs.map((epoch) => byEpoch.get(epoch)!);
+  // ── 3. Compute stats totals from visible rows only ────────────────
+  let totalTokens = 0;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let credits = 0;
+  for (const row of visibleRows) {
+    totalTokens += Number(row.tokens || 0);
+    promptTokens += Number(row.promptTokens || 0);
+    completionTokens += Number(row.completionTokens || 0);
+    credits += Number(row.credits || 0);
+  }
+  const stats: TokenStats = {
+    total: totalTokens,
+    prompt: promptTokens,
+    completion: completionTokens,
+    credits,
+  };
+
+  // ── 4. Compute per-model breakdown from visible rows only ─────────
+  const modelMap = new Map<string, {
+    provider: string;
+    model: string;
+    tokens: number;
+    promptTokens: number;
+    completionTokens: number;
+    credits: number;
+    requests: number;
+  }>();
+  for (const row of visibleRows) {
+    const key = modelKey(row);
+    const existing = modelMap.get(key);
+    if (existing) {
+      existing.tokens += Number(row.tokens || 0);
+      existing.promptTokens += Number(row.promptTokens || 0);
+      existing.completionTokens += Number(row.completionTokens || 0);
+      existing.credits += Number(row.credits || 0);
+      existing.requests += Number(row.count || 0);
+    } else {
+      modelMap.set(key, {
+        provider: row.provider || "unknown",
+        model: row.model || "unknown",
+        tokens: Number(row.tokens || 0),
+        promptTokens: Number(row.promptTokens || 0),
+        completionTokens: Number(row.completionTokens || 0),
+        credits: Number(row.credits || 0),
+        requests: Number(row.count || 0),
+      });
+    }
+  }
+  const modelUsage: ModelUsage[] = Array.from(modelMap.values())
+    .filter((m) => m.tokens > 0 || m.credits > 0)
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, 8)
+    .map((m, idx) => ({
+      ...m,
+      creditSource: "estimated",
+      color: modelColor(`${m.provider}/${m.model}`, idx),
+    }));
+
+  return { chartData, stats, modelUsage };
 }
 
 export default function TokenUsage({
@@ -154,7 +260,6 @@ export default function TokenUsage({
   const [filteredStats, setFilteredStats] = useState<TokenStats>(defaultStats);
   const [filteredModelUsage, setFilteredModelUsage] = useState<ModelUsage[]>([]);
 
-  // Use filtered data (fetched per period) instead of external (all-time) data
   const stats = filteredStats;
   const modelUsage = filteredModelUsage;
 
@@ -169,42 +274,15 @@ export default function TokenUsage({
     const hours = getChartHours(period);
     const range = period === "all" ? "all" : undefined;
     try {
-      const [usageRes, statsRes, modelsRes] = await Promise.all([
-        fetchUsage(hours, range) as Promise<{ data: Array<{ hour: string; provider?: string; model?: string; tokens?: number }> }>,
-        fetchDashboardStats(hours, range) as Promise<any>,
-        fetchModelUsage(hours, range) as Promise<{ data: any[] }>,
-      ]);
-
-      // Update chart data
-      setChartData(rowsToModelChart(usageRes.data || [], period, hours || 24 * 365));
-
-      // Update stats cards from filtered response
-      setFilteredStats({
-        total: Number(statsRes?.tokens?.total || 0),
-        prompt: Number(statsRes?.tokens?.prompt || 0),
-        completion: Number(statsRes?.tokens?.completion || 0),
-        credits: Number(statsRes?.tokens?.credits || 0),
-      });
-
-      // Update model usage from filtered response
-      const modelData = (modelsRes.data || [])
-        .filter((m: any) => Number(m.totalTokens || 0) > 0 || Number(m.credits || 0) > 0)
-        .sort((a: any, b: any) => Number(b.totalTokens || 0) - Number(a.totalTokens || 0))
-        .slice(0, 8)
-        .map((m: any, idx: number) => ({
-          provider: m.provider || "unknown",
-          model: m.model || "unknown",
-          tokens: Number(m.totalTokens || 0),
-          promptTokens: Number(m.promptTokens || 0),
-          completionTokens: Number(m.completionTokens || 0),
-          credits: Number(m.credits || 0),
-          requests: Number(m.totalRequests || 0),
-          creditSource: m.creditSource || "estimated",
-          color: modelColor(`${m.provider || "unknown"}/${m.model || "unknown"}`, idx),
-        }));
-      setFilteredModelUsage(modelData);
+      const usageRes = await fetchUsage(hours, range) as { data: UsageRow[] };
+      const { chartData: chart, stats: s, modelUsage: m } = processUsageData(usageRes.data || [], period);
+      setChartData(chart);
+      setFilteredStats(s);
+      setFilteredModelUsage(m);
     } catch {
       setChartData([]);
+      setFilteredStats(defaultStats);
+      setFilteredModelUsage([]);
     }
   }
 

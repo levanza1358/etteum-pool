@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Save, RefreshCw, Zap, Flame, Download, Upload, AlertTriangle, FileDown, FileUp, Database } from "lucide-react";
+import { Save, RefreshCw, Zap, Flame, Download, Upload, AlertTriangle, FileDown, FileUp, Database, Globe } from "lucide-react";
 import {
   fetchSettings,
   updateSettings,
@@ -34,6 +34,8 @@ export default function Settings() {
   const [form, setForm] = useState<Record<string, string>>({
     load_balancing_method: "round_robin",
     auto_warmup_interval_minutes: "15",
+    proxy_pool_usage: "all",
+    proxy_pool_rotation: "round_robin",
   });
   const [warmupStatus, setWarmupStatus] = useState<AutoWarmupStatus | null>(null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
@@ -330,6 +332,61 @@ export default function Settings() {
             <p className="text-xs text-[var(--muted-foreground)]">
               Auto WarmUp checks accounts with status active, exhausted, or error (skips pending). Enable/disable per provider on the Accounts page.
             </p>
+          </CardContent>
+        </Card>
+
+        {/* Proxy Pool */}
+        <Card className="border-[var(--border)]">
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Globe className="w-4 h-4 text-[var(--primary)]" />
+              Proxy Pool
+            </CardTitle>
+            <CardDescription>
+              Configure how the proxy pool is used for outgoing requests
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/40 p-4 space-y-2">
+              <label className="text-sm font-medium text-[var(--foreground)]">
+                Usage Scope
+              </label>
+              <select
+                value={form.proxy_pool_usage || "all"}
+                onChange={(e) => setValue("proxy_pool_usage", e.target.value)}
+                className="w-full h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]"
+              >
+                <option value="all">All — Model + Auth</option>
+                <option value="model">Model Only — API requests only</option>
+                <option value="auth">Auth Only — Login automation only</option>
+              </select>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                {form.proxy_pool_usage === "model"
+                  ? "Proxies are only used for upstream model API calls. Auth/login runs without proxy."
+                  : form.proxy_pool_usage === "auth"
+                    ? "Proxies are only used for login automation. Model API calls go direct."
+                    : "Proxies are used for both model API calls and login automation."}
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/40 p-4 space-y-2">
+              <label className="text-sm font-medium text-[var(--foreground)]">
+                Rotation Strategy
+              </label>
+              <select
+                value={form.proxy_pool_rotation || "round_robin"}
+                onChange={(e) => setValue("proxy_pool_rotation", e.target.value)}
+                className="w-full h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]"
+              >
+                <option value="round_robin">Round Robin</option>
+                <option value="sequential">Sequential</option>
+              </select>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                {form.proxy_pool_rotation === "sequential"
+                  ? "Uses one proxy until it fails, then moves to the next in the list."
+                  : "Distributes requests evenly across all active proxies in rotation."}
+              </p>
+            </div>
           </CardContent>
         </Card>
       </div>

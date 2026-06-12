@@ -157,6 +157,7 @@ export const proxyPool = sqliteTable("proxy_pool", {
   lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
   lastCheckedAt: integer("last_checked_at", { mode: "timestamp" }),
   errorMessage: text("error_message"),
+  latencyMs: integer("latency_ms"),
   successCount: integer("success_count").default(0),
   failCount: integer("fail_count").default(0),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),

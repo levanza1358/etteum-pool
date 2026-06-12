@@ -381,7 +381,7 @@ export async function loginAccount(account: Account, options: LoginOptions = {})
       ? { BATCHER_BROWSER_ENGINE: options.browserEngine || config.browserEngine, ...(await getKiroProUpgradeEnv(account.id)) }
       : {};
 
-    const proxyUrlForAuth = (await getNextProxy())?.url || "";
+    const proxyUrlForAuth = (await getNextProxy("auth"))?.url || "";
 
     const proc = Bun.spawn(
       [
@@ -697,7 +697,7 @@ export async function loginAllProviders(
   password: string
 ): Promise<Record<string, LoginResult>> {
   try {
-    const proxyUrlForAuth = (await getNextProxy())?.url || "";
+    const proxyUrlForAuth = (await getNextProxy("auth"))?.url || "";
 
     const proc = Bun.spawn(
       [

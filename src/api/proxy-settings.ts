@@ -5,6 +5,11 @@ import { eq } from "drizzle-orm";
 import { config } from "../config";
 import { pool } from "../proxy/pool";
 import { autoWarmupScheduler, isAutoWarmupSettingKey } from "../auth/warmup-scheduler";
+import { invalidateProxySettingsCache } from "../services/proxy-pool";
+
+function isProxyPoolSettingKey(key: string): boolean {
+  return key === "proxy_pool_usage" || key === "proxy_pool_rotation";
+}
 
 export const proxySettingsRouter = new Hono();
 
@@ -74,6 +79,10 @@ proxySettingsRouter.put("/:key", async (c) => {
     pool.invalidateLoadBalancingCache();
   }
 
+  if (isProxyPoolSettingKey(key)) {
+    invalidateProxySettingsCache();
+  }
+
   if (isAutoWarmupSettingKey(key)) {
     void autoWarmupScheduler.reload();
   }
@@ -106,6 +115,7 @@ proxySettingsRouter.put("/", async (c) => {
 
   let lbCacheTouched = false;
   let warmupTouched = false;
+  let proxyPoolTouched = false;
   for (const [key, value] of Object.entries(body)) {
     const existing = await db
       .select()
@@ -124,12 +134,16 @@ proxySettingsRouter.put("/", async (c) => {
     if (key === "load_balancing_method" || /^provider_.+_lb_method$/.test(key)) {
       lbCacheTouched = true;
     }
+    if (isProxyPoolSettingKey(key)) {
+      proxyPoolTouched = true;
+    }
     if (isAutoWarmupSettingKey(key)) {
       warmupTouched = true;
     }
   }
 
   if (lbCacheTouched) pool.invalidateLoadBalancingCache();
+  if (proxyPoolTouched) invalidateProxySettingsCache();
   if (warmupTouched) void autoWarmupScheduler.reload();
 
   return c.json({ success: true, updated: Object.keys(body).length });

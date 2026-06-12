@@ -267,7 +267,7 @@ export abstract class BaseProvider {
     const { getNextProxy, markProxySuccess, markProxyFail } = await import("../../services/proxy-pool");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const proxy = await getNextProxy();
+    const proxy = await getNextProxy("model");
     try {
       const response = await fetch(url, {
         ...init,

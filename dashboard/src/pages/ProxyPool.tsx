@@ -14,6 +14,7 @@ interface ProxyEntry {
   lastUsedAt: string | null;
   lastCheckedAt: string | null;
   errorMessage: string | null;
+  latencyMs: number | null;
   successCount: number;
   failCount: number;
   createdAt: string;
@@ -197,6 +198,19 @@ export default function ProxyPool() {
     );
   };
 
+  const latencyBadge = (ms: number | null) => {
+    if (ms == null) return null;
+    const color =
+      ms < 1000 ? "text-[var(--success)]" :
+      ms < 3000 ? "text-[var(--warning)]" :
+      "text-[var(--error)]";
+    return (
+      <span className={`text-xs font-mono shrink-0 ${color}`}>
+        {ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`}
+      </span>
+    );
+  };
+
   const maskUrl = (url: string) => {
     try {
       const u = new URL(url);
@@ -369,6 +383,7 @@ export default function ProxyPool() {
                     <span className="font-mono text-sm truncate">{maskUrl(proxy.url)}</span>
                     <span className="text-xs text-[var(--muted-foreground)] shrink-0">{proxy.type}</span>
                     {statusBadge(proxy.status)}
+                    {latencyBadge(proxy.latencyMs)}
                     <span className="text-xs text-[var(--muted-foreground)] shrink-0">
                       {proxy.successCount}ok / {proxy.failCount}fail
                     </span>
