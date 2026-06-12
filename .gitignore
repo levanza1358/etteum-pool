@@ -1,77 +1,58 @@
-# dependencies (bun install)
-node_modules
-
-# python venv
-.venv/
+# === Dependencies ===
+node_modules/
+scripts/auth/.venv/
 __pycache__/
 *.pyc
 
-# sensitive data
-scripts/cookies/
+# === Environment & Secrets ===
+.env
+.env.local
+.env.*.local
 
-# local probe / intercept scripts (reverse-engineering helpers, not part of the proxy)
-scripts/probe-*.ts
-scripts/dump-*.ts
-scripts/qoder-intercept.mjs
-scripts/test-kiro-pro-inference.ts
-test/codex_direct.ts
+# === Database ===
+data/
+*.db
 
-# output
-out
-dist
-*.tgz
-
-# code coverage
-coverage
-*.lcov
-
-# logs
-logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
-.poolprox.log
+# === Logs & Runtime ===
+*.log
+.etteum.pid
 .poolprox.pid
 
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
+# === Build Output ===
+dist/
+out/
+dashboard/dist/
+*.tgz
 
-# Claude Code local project overrides
-.claude/settings.local.json
+# === Drizzle Migrations ===
+drizzle/
 
-# caches
+# === Caches ===
 .eslintcache
 .cache
 *.tsbuildinfo
+bun.lock
 
-# IntelliJ based IDEs
-.idea
+# === Code Coverage ===
+coverage/
+*.lcov
 
-# Finder (MacOS) folder config
+# === IDE ===
+.idea/
+.vscode/
 .DS_Store
 
-# Database
-data/
-
-# Drizzle migrations
-drizzle/
-
-# Bun lockfile (optional - some prefer to commit this)
-# bun.lock
-
-# Debug artifacts
-*.png
-EOF
-
-
-# Playwright MCP runtime
+# === Playwright ===
 .playwright-mcp/
 
-# Nested git repos (external services)
-services/windsurf-api/
+# === Claude/AI ===
+.claude/
 
-.etteum.log
-.etteum.err.log
+# === Sensitive scripts ===
+scripts/cookies/
+scripts/probe-*.ts
+scripts/dump-*.ts
+
+# === Debug artifacts ===
+*.png
+report.*.json

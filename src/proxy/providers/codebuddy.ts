@@ -730,10 +730,14 @@ export class CodeBuddyProvider extends BaseProvider {
       body.reasoning = { effort: "high" };
     }
 
+    const bodyStr = JSON.stringify(body);
+    console.log(`[CB-DEBUG] Request body: ${bodyStr.slice(0, 500)}`);
+    console.log(`[CB-DEBUG] Headers: ${JSON.stringify(Object.keys(headers))}`);
+
     return this.fetchWithTimeout(`${this.baseUrl}/v2/chat/completions`, {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: bodyStr,
     });
   }
 

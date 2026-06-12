@@ -204,6 +204,38 @@ export async function fetchModels() {
   return fetchApi("/v1/models");
 }
 
+export interface ModelTestResult {
+  model: string;
+  provider: string;
+  status: "success" | "error";
+  durationMs: number;
+  response?: string;
+  error?: string;
+}
+
+export async function testModel(model: string): Promise<ModelTestResult> {
+  return fetchApi("/api/models/test", {
+    method: "POST",
+    body: JSON.stringify({ model }),
+    timeoutMs: 60_000,
+  });
+}
+
+export async function testAllModels(): Promise<{ results: ModelTestResult[] }> {
+  return fetchApi("/api/models/test-all", {
+    method: "POST",
+    timeoutMs: 300_000,
+  });
+}
+
+export async function testProvider(provider: string): Promise<{ results: ModelTestResult[]; provider: string }> {
+  return fetchApi("/api/models/test-provider", {
+    method: "POST",
+    body: JSON.stringify({ provider }),
+    timeoutMs: 300_000,
+  });
+}
+
 export interface ModelMappingDTO {
   id?: number;
   sourcePattern: string;

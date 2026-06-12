@@ -1,9 +1,10 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Cpu, Copy, Check, Search } from "lucide-react";
-import { useEffect, useState } from "react";
-import { fetchModels } from "@/lib/api";
+import { Cpu, Copy, Check, Search, Play, Loader2, CheckCircle2, XCircle, Zap } from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
+import { fetchModels, testModel, testAllModels, testProvider, type ModelTestResult } from "@/lib/api";
 import { useTimedMessage } from "@/hooks/useTimedMessage";
+import { useWsEvent } from "@/hooks/useWebSocket";
 
 interface ModelData {
   id: string;
@@ -38,6 +39,13 @@ export default function Models() {
   const [search, setSearch] = useState("");
   const { message: copiedModel, setMessage: setCopiedModel } = useTimedMessage<string>(null, 1500);
 
+  // Test state
+  const [testResults, setTestResults] = useState<Record<string, ModelTestResult>>({});
+  const [testingModel, setTestingModel] = useState<string | null>(null);
+  const [testingAll, setTestingAll] = useState(false);
+  const [testingProvider, setTestingProvider] = useState<string | null>(null);
+  const [testAllProgress, setTestAllProgress] = useState<{ completed: number; total: number } | null>(null);
+
   useEffect(() => {
     fetchModels()
       .then((res: { data: ModelData[] }) => {
@@ -47,6 +55,73 @@ export default function Models() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Listen for test progress via WebSocket
+  useWsEvent("model_test_progress", useCallback((msg: any) => {
+    const { completed, total, latest } = msg.data || {};
+    setTestAllProgress({ completed, total });
+    if (Array.isArray(latest)) {
+      setTestResults((prev) => {
+        const next = { ...prev };
+        for (const r of latest) {
+          next[r.model] = r;
+        }
+        return next;
+      });
+    }
+  }, []));
+
+  const handleTestModel = async (modelId: string) => {
+    setTestingModel(modelId);
+    try {
+      const result = await testModel(modelId);
+      setTestResults((prev) => ({ ...prev, [modelId]: result }));
+    } catch (err: any) {
+      setTestResults((prev) => ({
+        ...prev,
+        [modelId]: { model: modelId, provider: "unknown", status: "error", durationMs: 0, error: err.message },
+      }));
+    } finally {
+      setTestingModel(null);
+    }
+  };
+
+  const handleTestAll = async () => {
+    setTestingAll(true);
+    setTestResults({});
+    setTestAllProgress({ completed: 0, total: models.length });
+    try {
+      const { results } = await testAllModels();
+      const map: Record<string, ModelTestResult> = {};
+      for (const r of results) map[r.model] = r;
+      setTestResults(map);
+    } catch {
+      // WebSocket progress should have partial results
+    } finally {
+      setTestingAll(false);
+      setTestAllProgress(null);
+    }
+  };
+
+  const handleTestProvider = async (providerName: string) => {
+    setTestingProvider(providerName);
+    const providerModelCount = models.filter((m) => m.owned_by === providerName).length;
+    setTestAllProgress({ completed: 0, total: providerModelCount });
+    try {
+      const { results } = await testProvider(providerName);
+      const map: Record<string, ModelTestResult> = { ...testResults };
+      for (const r of results) map[r.model] = r;
+      setTestResults(map);
+    } catch {
+      // WebSocket progress should have partial results
+    } finally {
+      setTestingProvider(null);
+      setTestAllProgress(null);
+    }
+  };
+
+  // Status filter: all | working | not-working
+  const [statusFilter, setStatusFilter] = useState<"all" | "working" | "not-working">("all");
+
   const providers = ["all", ...Array.from(new Set(models.map((m) => m.owned_by)))];
 
   const filtered = models
@@ -55,7 +130,13 @@ export default function Models() {
       search === "" ||
       m.id.toLowerCase().includes(search.toLowerCase()) ||
       m.owned_by.toLowerCase().includes(search.toLowerCase())
-    );
+    )
+    .filter((m) => {
+      if (statusFilter === "all") return true;
+      const result = testResults[m.id];
+      if (!result) return false; // untested models hidden when filtering by status
+      return statusFilter === "working" ? result.status === "success" : result.status === "error";
+    });
 
   async function copyModelId(modelId: string) {
     await navigator.clipboard.writeText(modelId);
@@ -73,12 +154,62 @@ export default function Models() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">Models</h1>
-        <p className="text-sm text-[var(--muted-foreground)] mt-1">
-          {models.length} models available across {new Set(models.map((m) => m.owned_by)).size} providers
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-[var(--foreground)]">Models</h1>
+          <p className="text-sm text-[var(--muted-foreground)] mt-1">
+            {models.length} models available across {new Set(models.map((m) => m.owned_by)).size} providers
+          </p>
+        </div>
+        <button
+          onClick={handleTestAll}
+          disabled={testingAll || !!testingProvider}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {testingAll || testingProvider ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Testing {testingProvider ? testingProvider : ""} {testAllProgress ? `${testAllProgress.completed}/${testAllProgress.total}` : "..."}
+            </>
+          ) : (
+            <>
+              <Zap className="w-4 h-4" />
+              Test All Models
+            </>
+          )}
+        </button>
       </div>
+
+      {/* Test Results Summary */}
+      {Object.keys(testResults).length > 0 && (
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-[var(--success)]" />
+                <span className="text-sm text-[var(--foreground)]">
+                  {Object.values(testResults).filter((r) => r.status === "success").length} passed
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <XCircle className="w-4 h-4 text-[var(--destructive)]" />
+                <span className="text-sm text-[var(--foreground)]">
+                  {Object.values(testResults).filter((r) => r.status === "error").length} failed
+                </span>
+              </div>
+              <div className="text-sm text-[var(--muted-foreground)]">
+                Avg: {Math.round(Object.values(testResults).reduce((a, r) => a + r.durationMs, 0) / Object.values(testResults).length)}ms
+              </div>
+              <button
+                onClick={() => setTestResults({})}
+                className="ml-auto text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              >
+                Clear results
+              </button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Search */}
       <Card>
@@ -97,20 +228,64 @@ export default function Models() {
       </Card>
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {providers.map((p) => (
-          <button
-            key={p}
-            onClick={() => setFilter(p)}
-            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-              filter === p
-                ? "bg-[var(--info)]/20 text-[var(--info)] border border-[var(--info)]/30"
-                : "bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            }`}
-          >
-            {p === "all" ? "All" : p.charAt(0).toUpperCase() + p.slice(1)}
-          </button>
+          <div key={p} className="flex items-center gap-0.5">
+            <button
+              onClick={() => setFilter(p)}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                filter === p
+                  ? "bg-[var(--info)]/20 text-[var(--info)] border border-[var(--info)]/30"
+                  : "bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              {p === "all" ? "All" : p.charAt(0).toUpperCase() + p.slice(1)}
+            </button>
+            {p !== "all" && (
+              <button
+                onClick={() => handleTestProvider(p)}
+                disabled={testingAll || testingProvider === p}
+                title={`Test all ${p} models`}
+                className="p-1 rounded-md hover:bg-[var(--secondary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {testingProvider === p ? (
+                  <Loader2 className="w-3 h-3 animate-spin text-[var(--primary)]" />
+                ) : (
+                  <Play className="w-3 h-3 text-[var(--muted-foreground)] hover:text-[var(--primary)]" />
+                )}
+              </button>
+            )}
+          </div>
         ))}
+
+        {/* Status filter separator + buttons */}
+        {Object.keys(testResults).length > 0 && (
+          <>
+            <div className="w-px h-5 bg-[var(--border)] mx-1" />
+            {([
+              { key: "all" as const, label: "All Status", icon: null },
+              { key: "working" as const, label: `Working (${Object.values(testResults).filter(r => r.status === "success").length})`, icon: <CheckCircle2 className="w-3 h-3" /> },
+              { key: "not-working" as const, label: `Not Working (${Object.values(testResults).filter(r => r.status === "error").length})`, icon: <XCircle className="w-3 h-3" /> },
+            ]).map((s) => (
+              <button
+                key={s.key}
+                onClick={() => setStatusFilter(s.key)}
+                className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  statusFilter === s.key
+                    ? s.key === "working"
+                      ? "bg-[var(--success)]/15 text-[var(--success)] border border-[var(--success)]/30"
+                      : s.key === "not-working"
+                      ? "bg-[var(--destructive)]/15 text-[var(--destructive)] border border-[var(--destructive)]/30"
+                      : "bg-[var(--info)]/20 text-[var(--info)] border border-[var(--info)]/30"
+                    : "bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                }`}
+              >
+                {s.icon}
+                {s.label}
+              </button>
+            ))}
+          </>
+        )}
       </div>
 
       {/* Table */}
@@ -135,7 +310,10 @@ export default function Models() {
                   <th className="text-left py-3 px-4 text-xs font-medium text-[var(--muted-foreground)] uppercase tracking-wider">
                     Features
                   </th>
-                  <th className="w-12"></th>
+                  <th className="text-left py-3 px-4 text-xs font-medium text-[var(--muted-foreground)] uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="w-24"></th>
                 </tr>
               </thead>
               <tbody>
@@ -179,20 +357,61 @@ export default function Models() {
                       )}
                     </td>
 
-                    {/* Copy Button */}
+                    {/* Test Status */}
                     <td className="py-3 px-4">
-                      <button
-                        type="button"
-                        onClick={() => copyModelId(model.id)}
-                        title={`Copy model ID: ${model.id}`}
-                        className="p-1.5 rounded-md hover:bg-[var(--secondary)] transition-colors group"
-                      >
-                        {copiedModel === model.id ? (
-                          <Check className="w-4 h-4 text-[var(--success)]" />
-                        ) : (
-                          <Copy className="w-4 h-4 text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]" />
-                        )}
-                      </button>
+                      {testingModel === model.id ? (
+                        <div className="flex items-center gap-1.5">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--primary)]" />
+                          <span className="text-xs text-[var(--muted-foreground)]">Testing...</span>
+                        </div>
+                      ) : testResults[model.id] ? (
+                        <div className="flex items-center gap-1.5">
+                          {testResults[model.id].status === "success" ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5 text-[var(--success)]" />
+                              <span className="text-xs text-[var(--success)]">
+                                {testResults[model.id].durationMs}ms
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <XCircle className="w-3.5 h-3.5 text-[var(--destructive)]" />
+                              <span className="text-xs text-[var(--destructive)]" title={testResults[model.id].error}>
+                                Failed
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-[var(--muted-foreground)]">—</span>
+                      )}
+                    </td>
+
+                    {/* Actions */}
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleTestModel(model.id)}
+                          disabled={testingModel === model.id || testingAll || !!testingProvider}
+                          title={`Test model: ${model.id}`}
+                          className="p-1.5 rounded-md hover:bg-[var(--secondary)] transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <Play className="w-4 h-4 text-[var(--muted-foreground)] group-hover:text-[var(--primary)]" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyModelId(model.id)}
+                          title={`Copy model ID: ${model.id}`}
+                          className="p-1.5 rounded-md hover:bg-[var(--secondary)] transition-colors group"
+                        >
+                          {copiedModel === model.id ? (
+                            <Check className="w-4 h-4 text-[var(--success)]" />
+                          ) : (
+                            <Copy className="w-4 h-4 text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]" />
+                          )}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
