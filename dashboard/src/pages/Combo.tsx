@@ -245,7 +245,7 @@ export default function Combo() {
             <Layers className="h-6 w-6" /> Combo Fallback
           </h1>
           <p className="text-sm text-[var(--muted-foreground)] mt-1">
-            Auto-fallback ke provider + model lain saat request gagal
+            Automatically fallback to another provider + model when a request fails
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -291,8 +291,8 @@ export default function Combo() {
                 className="font-mono"
               />
               <p className="text-xs text-[var(--muted-foreground)] mt-1">
-                Nama model custom yang muncul di <code className="bg-[var(--accent)] px-1 rounded">/v1/models</code> dan bisa dipilih di client.
-                Contoh: <code className="bg-[var(--accent)] px-1 rounded">best</code>, <code className="bg-[var(--accent)] px-1 rounded">auto-opus</code>
+                The custom model name shown in <code className="bg-[var(--accent)] px-1 rounded">/v1/models</code> and selectable by clients.
+                Example: <code className="bg-[var(--accent)] px-1 rounded">best</code>, <code className="bg-[var(--accent)] px-1 rounded">auto-opus</code>
               </p>
             </div>
 
@@ -313,7 +313,7 @@ export default function Combo() {
                   onChange={(e) => setForm({ ...form, triggerModel: e.target.value })}
                   placeholder="e.g. opus, claude-sonnet, cb-opus"
                 />
-                <p className="text-xs text-[var(--muted-foreground)] mt-1">Pattern untuk mencocokkan model lain yang juga trigger combo ini</p>
+                <p className="text-xs text-[var(--muted-foreground)] mt-1">Pattern used to match other models that should also trigger this combo</p>
               </div>
               <div>
                 <label className="text-xs font-medium text-[var(--muted-foreground)]">Match Type</label>
@@ -466,7 +466,7 @@ export default function Combo() {
             <Layers className="h-12 w-12 mx-auto mb-3 text-[var(--muted-foreground)] opacity-40" />
             <p className="text-[var(--muted-foreground)]">No combo rules yet</p>
             <p className="text-xs text-[var(--muted-foreground)] mt-1">
-              Create a rule to auto-fallback ke provider lain saat request gagal
+              Create a rule to automatically fallback to another provider when a request fails
             </p>
             <Button size="sm" className="mt-4" onClick={() => setForm({ ...emptyForm })}>
               <Plus className="h-4 w-4 mr-1" /> Create First Rule
@@ -575,21 +575,21 @@ export default function Combo() {
       {/* Info */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm">Cara Kerja Combo</CardTitle>
+          <CardTitle className="text-sm">How Combo Works</CardTitle>
         </CardHeader>
         <CardContent className="text-xs text-[var(--muted-foreground)] space-y-2">
           <p>
-            Combo otomatis mencoba provider + model lain saat request gagal.
-            Misalnya jika <code className="bg-[var(--accent)] px-1 rounded">cb-opus-4.6</code> di CodeBuddy
-            kehabisan quota, combo bisa fallback ke{" "}
-            <code className="bg-[var(--accent)] px-1 rounded">claude-sonnet-4.5</code> di Kiro.
+            Combo automatically tries another provider + model when a request fails.
+            For example, if <code className="bg-[var(--accent)] px-1 rounded">cb-opus-4.6</code> on CodeBuddy
+            runs out of quota, combo can fallback to{" "}
+            <code className="bg-[var(--accent)] px-1 rounded">claude-sonnet-4.5</code> on Kiro.
           </p>
           <p>
-            <strong>Trigger Model:</strong> Pattern yang dicocokkan dengan model yang diminta client.
+            <strong>Trigger Model:</strong> Pattern matched against the model requested by the client.
             <br />
-            <strong>Fallback Chain:</strong> Urutan provider+model yang dicoba saat gagal.
+            <strong>Fallback Chain:</strong> Ordered provider+model steps to try when a request fails.
             <br />
-            <strong>Retry On:</strong> Kondisi error yang memicu fallback (quota habis, rate limit, dll).
+            <strong>Retry On:</strong> Error conditions that trigger fallback (quota exhausted, rate limit, etc.).
           </p>
         </CardContent>
       </Card>
