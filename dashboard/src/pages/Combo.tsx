@@ -18,6 +18,7 @@ interface ComboStep {
 interface ComboRule {
   id: number;
   name: string;
+  modelId: string;
   triggerModel: string;
   matchType: "exact" | "contains" | "prefix";
   steps: ComboStep[];
@@ -41,6 +42,7 @@ interface AvailableModels {
 interface FormState {
   id: number | null;
   name: string;
+  modelId: string;
   triggerModel: string;
   matchType: "exact" | "contains" | "prefix";
   steps: ComboStep[];
@@ -60,6 +62,7 @@ const RETRY_OPTIONS = [
 const emptyForm: FormState = {
   id: null,
   name: "",
+  modelId: "",
   triggerModel: "",
   matchType: "contains",
   steps: [{ provider: "", model: "" }],
@@ -176,6 +179,7 @@ export default function Combo() {
     setForm({
       id: rule.id,
       name: rule.name,
+      modelId: rule.modelId || "",
       triggerModel: rule.triggerModel,
       matchType: rule.matchType,
       steps: [...rule.steps],
@@ -266,6 +270,21 @@ export default function Combo() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* Model ID */}
+            <div>
+              <label className="text-xs font-medium text-[var(--muted-foreground)]">Model ID (custom name)</label>
+              <Input
+                value={form.modelId}
+                onChange={(e) => setForm({ ...form, modelId: e.target.value.replace(/\s/g, '-') })}
+                placeholder="e.g. best, fast, auto-opus"
+                className="font-mono"
+              />
+              <p className="text-xs text-[var(--muted-foreground)] mt-1">
+                Nama model custom yang muncul di <code className="bg-[var(--accent)] px-1 rounded">/v1/models</code> dan bisa dipilih di client.
+                Contoh: <code className="bg-[var(--accent)] px-1 rounded">best</code>, <code className="bg-[var(--accent)] px-1 rounded">auto-opus</code>
+              </p>
+            </div>
+
             {/* Name + Trigger */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div>
@@ -277,12 +296,13 @@ export default function Combo() {
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-[var(--muted-foreground)]">Trigger Model (pattern)</label>
+                <label className="text-xs font-medium text-[var(--muted-foreground)]">Trigger Model (pattern fallback)</label>
                 <Input
                   value={form.triggerModel}
                   onChange={(e) => setForm({ ...form, triggerModel: e.target.value })}
                   placeholder="e.g. opus, claude-sonnet, cb-opus"
                 />
+                <p className="text-xs text-[var(--muted-foreground)] mt-1">Pattern untuk mencocokkan model lain yang juga trigger combo ini</p>
               </div>
               <div>
                 <label className="text-xs font-medium text-[var(--muted-foreground)]">Match Type</label>
@@ -438,8 +458,13 @@ export default function Combo() {
                       }`}
                     />
                     <div className="min-w-0">
-                      <div className="font-medium text-sm truncate">
+                      <div className="font-medium text-sm truncate flex items-center gap-2">
                         {rule.name || `Rule #${rule.id}`}
+                        {(rule.modelId || rule.triggerModel) && (
+                          <span className="font-mono text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400">
+                            model: {rule.modelId || rule.triggerModel}
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-[var(--muted-foreground)] flex items-center gap-2 mt-0.5">
                         <span className="font-mono bg-[var(--accent)] px-1.5 py-0.5 rounded">

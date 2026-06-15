@@ -29,7 +29,8 @@ export interface ComboStep {
 export interface ComboRule {
   id: number;
   name: string;           // human label, e.g. "Opus fallback chain"
-  triggerModel: string;    // incoming model pattern (exact or contains)
+  modelId: string;        // custom model name shown in /v1/models (e.g. "best", "fast")
+  triggerModel: string;    // incoming model pattern (exact or contains) — also used as fallback modelId
   matchType: "exact" | "contains" | "prefix";
   steps: ComboStep[];     // ordered fallback chain
   maxRetries: number;     // max providers to try (0 = try all steps)
@@ -54,6 +55,7 @@ export function ensureComboTable(): void {
     CREATE TABLE IF NOT EXISTS combo_rules (
       id          INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
       name        TEXT NOT NULL DEFAULT '',
+      model_id    TEXT NOT NULL DEFAULT '',
       trigger_model TEXT NOT NULL,
       match_type  TEXT NOT NULL DEFAULT 'contains',
       steps       TEXT NOT NULL DEFAULT '[]',
@@ -65,6 +67,12 @@ export function ensureComboTable(): void {
       updated_at  INTEGER
     );
   `);
+  // Add model_id column if upgrading from older schema
+  try {
+    client.exec(`ALTER TABLE combo_rules ADD COLUMN model_id TEXT NOT NULL DEFAULT ''`);
+  } catch {
+    // Column already exists — ignore
+  }
   client.exec(
     `CREATE INDEX IF NOT EXISTS combo_rules_priority_idx ON combo_rules (priority);`
   );
@@ -125,7 +133,7 @@ export function getComboVirtualModels(): ModelInfo[] {
   return cache
     .filter((r) => r.enabled && r.steps.length > 0)
     .map((rule) => ({
-      id: rule.triggerModel,
+      id: rule.modelId || rule.triggerModel,  // custom model name, fallback to trigger
       object: "model" as const,
       created: Math.floor(rule.createdAt.getTime() / 1000),
       owned_by: "combo",
@@ -144,7 +152,9 @@ export function isComboModel(model: string): ComboRule | null {
   const lower = model.toLowerCase();
   for (const rule of cache) {
     if (!rule.enabled || rule.steps.length === 0) continue;
-    if (rule.triggerModel.toLowerCase() === lower) return rule;
+    // Match on custom modelId first, then triggerModel as fallback
+    const ruleModelId = (rule.modelId || rule.triggerModel).toLowerCase();
+    if (ruleModelId === lower) return rule;
   }
   return null;
 }
@@ -245,11 +255,12 @@ export async function createComboRule(rule: NewComboRule): Promise<ComboRule> {
   const now = Math.floor(Date.now() / 1000);
   const result = client
     .prepare(
-      `INSERT INTO combo_rules (name, trigger_model, match_type, steps, max_retries, retry_on, enabled, priority, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO combo_rules (name, model_id, trigger_model, match_type, steps, max_retries, retry_on, enabled, priority, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       rule.name,
+      rule.modelId || '',
       rule.triggerModel,
       rule.matchType,
       JSON.stringify(rule.steps),
@@ -283,12 +294,13 @@ export async function updateComboRule(
   client
     .prepare(
       `UPDATE combo_rules
-       SET name = ?, trigger_model = ?, match_type = ?, steps = ?,
+       SET name = ?, model_id = ?, trigger_model = ?, match_type = ?, steps = ?,
            max_retries = ?, retry_on = ?, enabled = ?, priority = ?, updated_at = ?
        WHERE id = ?`
     )
     .run(
       merged.name,
+      merged.modelId || '',
       merged.triggerModel,
       merged.matchType,
       JSON.stringify(merged.steps),
@@ -318,6 +330,7 @@ function rowToComboRule(row: any): ComboRule {
   return {
     id: row.id,
     name: row.name || "",
+    modelId: row.model_id || "",
     triggerModel: row.trigger_model,
     matchType: row.match_type || "contains",
     steps: safeJsonParse(row.steps, []),

@@ -77,6 +77,7 @@ comboRouter.post("/", async (c) => {
 
   const rule = await createComboRule({
     name: body.name || "",
+    modelId: body.modelId || "",
     triggerModel: body.triggerModel,
     matchType: body.matchType || "contains",
     steps: body.steps,
