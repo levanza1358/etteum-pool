@@ -200,6 +200,17 @@ export default function Combo() {
     setForm({ ...form, steps: form.steps.filter((_, i) => i !== index) });
   }
 
+  function moveStep(index: number, direction: "up" | "down") {
+    if (!form) return;
+    const target = direction === "up" ? index - 1 : index + 1;
+    if (target < 0 || target >= form.steps.length) return;
+    const steps = [...form.steps];
+    const tmp = steps[index]!;
+    steps[index] = steps[target]!;
+    steps[target] = tmp;
+    setForm({ ...form, steps });
+  }
+
   function updateStep(index: number, field: "provider" | "model", value: string) {
     if (!form) return;
     const steps = [...form.steps];
@@ -329,6 +340,26 @@ export default function Combo() {
                     <span className="text-xs text-[var(--muted-foreground)] w-6 text-center font-mono">
                       {i + 1}.
                     </span>
+                    <div className="flex flex-col">
+                      <button
+                        type="button"
+                        className="h-4 w-5 flex items-center justify-center rounded text-[var(--muted-foreground)] hover:bg-[var(--accent)] disabled:opacity-20 disabled:cursor-not-allowed"
+                        onClick={() => moveStep(i, "up")}
+                        disabled={i === 0}
+                        title="Move up"
+                      >
+                        <ChevronUp className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        className="h-4 w-5 flex items-center justify-center rounded text-[var(--muted-foreground)] hover:bg-[var(--accent)] disabled:opacity-20 disabled:cursor-not-allowed"
+                        onClick={() => moveStep(i, "down")}
+                        disabled={i === form.steps.length - 1}
+                        title="Move down"
+                      >
+                        <ChevronDown className="h-3 w-3" />
+                      </button>
+                    </div>
                     <select
                       className="flex-1 h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm"
                       value={step.provider}
@@ -350,9 +381,6 @@ export default function Combo() {
                         <option key={m.id} value={m.id}>{m.id}</option>
                       ))}
                     </select>
-                    {i > 0 && (
-                      <ArrowDown className="h-4 w-4 text-[var(--muted-foreground)] -rotate-180 opacity-30" />
-                    )}
                     <Button
                       variant="ghost"
                       size="sm"
