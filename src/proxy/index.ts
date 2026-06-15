@@ -456,8 +456,16 @@ async function handleChatCompletion(body: ChatCompletionRequest) {
   // Claude Code's hardcoded haiku/sonnet/opus ids -> a model in the pool).
   body = { ...body, model: resolveModelAlias(normalizeModelId(body.model)) };
   const isStream = body.stream === true;
-  const { result, account, provider, durationMs, compressionStats } = await routeRequest(body, isStream);
+  const { result, account, provider, durationMs, compressionStats, comboInfo } = await routeRequest(body, isStream);
   let shouldReleaseTracking = true;
+
+  // Log combo fallback info if a combo chain was used
+  if (comboInfo) {
+    console.log(
+      `[Combo] Request used fallback: ${comboInfo.originalModel} → ${comboInfo.usedProvider}/${comboInfo.usedModel} ` +
+      `(rule: "${comboInfo.ruleName}", steps: ${comboInfo.attemptedSteps.join(" → ")})`
+    );
+  }
 
   try {
     const promptTokens = result.promptTokens || result.response?.usage?.prompt_tokens || estimateMessagesTokens(body.messages);

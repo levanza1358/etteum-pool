@@ -1,0 +1,545 @@
+import { useState, useEffect, useCallback } from "react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Layers, Plus, Trash2, Power, PowerOff, Pencil, X, GripVertical, ArrowDown, ChevronDown, ChevronUp } from "lucide-react";
+import { fetchApi } from "@/lib/api";
+import { useTimedMessage } from "@/hooks/useTimedMessage";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface ComboStep {
+  provider: string;
+  model: string;
+}
+
+interface ComboRule {
+  id: number;
+  name: string;
+  triggerModel: string;
+  matchType: "exact" | "contains" | "prefix";
+  steps: ComboStep[];
+  maxRetries: number;
+  retryOn: string[];
+  enabled: boolean;
+  priority: number;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+interface ComboListResponse {
+  data: ComboRule[];
+  enabled: boolean;
+}
+
+interface AvailableModels {
+  data: Record<string, { id: string; name: string }[]>;
+}
+
+interface FormState {
+  id: number | null;
+  name: string;
+  triggerModel: string;
+  matchType: "exact" | "contains" | "prefix";
+  steps: ComboStep[];
+  maxRetries: number;
+  retryOn: string[];
+  enabled: boolean;
+  priority: number;
+}
+
+const RETRY_OPTIONS = [
+  { value: "quota_exhausted", label: "Quota Exhausted" },
+  { value: "rate_limit", label: "Rate Limited (429)" },
+  { value: "error", label: "Server Error" },
+  { value: "timeout", label: "Timeout" },
+];
+
+const emptyForm: FormState = {
+  id: null,
+  name: "",
+  triggerModel: "",
+  matchType: "contains",
+  steps: [{ provider: "", model: "" }],
+  maxRetries: 3,
+  retryOn: ["quota_exhausted", "rate_limit", "error", "timeout"],
+  enabled: true,
+  priority: 0,
+};
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+export default function Combo() {
+  const [rules, setRules] = useState<ComboRule[]>([]);
+  const [globalEnabled, setGlobalEnabled] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState<FormState | null>(null);
+  const [availableModels, setAvailableModels] = useState<Record<string, { id: string; name: string }[]>>({});
+  const [expandedRule, setExpandedRule] = useState<number | null>(null);
+  const { message, setMessage } = useTimedMessage<string>(null, 3000);
+
+  const load = useCallback(async () => {
+    try {
+      const [rulesRes, modelsRes] = await Promise.all([
+        fetchApi<ComboListResponse>("/api/combo"),
+        fetchApi<AvailableModels>("/api/combo/models"),
+      ]);
+      setRules(rulesRes.data);
+      setGlobalEnabled(rulesRes.enabled);
+      setAvailableModels(modelsRes.data);
+    } catch {
+      setRules([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function toggleGlobal() {
+    try {
+      await fetchApi("/api/combo/toggle", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !globalEnabled }),
+      });
+      setGlobalEnabled(!globalEnabled);
+      setMessage(`Combo ${!globalEnabled ? "enabled" : "disabled"}`);
+    } catch {
+      setMessage("Failed to toggle combo");
+    }
+  }
+
+  async function toggleRule(rule: ComboRule) {
+    try {
+      await fetchApi(`/api/combo/${rule.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !rule.enabled }),
+      });
+      await load();
+    } catch {
+      setMessage("Failed to toggle rule");
+    }
+  }
+
+  async function deleteRule(id: number) {
+    if (!confirm("Delete this combo rule?")) return;
+    try {
+      await fetchApi(`/api/combo/${id}`, { method: "DELETE" });
+      await load();
+      setMessage("Rule deleted");
+    } catch {
+      setMessage("Failed to delete rule");
+    }
+  }
+
+  async function saveForm() {
+    if (!form) return;
+    if (!form.triggerModel.trim()) {
+      setMessage("Trigger model is required");
+      return;
+    }
+    if (form.steps.length === 0 || form.steps.some((s) => !s.provider || !s.model)) {
+      setMessage("All steps must have provider and model");
+      return;
+    }
+
+    try {
+      if (form.id) {
+        await fetchApi(`/api/combo/${form.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(form),
+        });
+        setMessage("Rule updated");
+      } else {
+        await fetchApi("/api/combo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(form),
+        });
+        setMessage("Rule created");
+      }
+      setForm(null);
+      await load();
+    } catch {
+      setMessage("Failed to save rule");
+    }
+  }
+
+  function editRule(rule: ComboRule) {
+    setForm({
+      id: rule.id,
+      name: rule.name,
+      triggerModel: rule.triggerModel,
+      matchType: rule.matchType,
+      steps: [...rule.steps],
+      maxRetries: rule.maxRetries,
+      retryOn: [...rule.retryOn],
+      enabled: rule.enabled,
+      priority: rule.priority,
+    });
+  }
+
+  function addStep() {
+    if (!form) return;
+    setForm({ ...form, steps: [...form.steps, { provider: "", model: "" }] });
+  }
+
+  function removeStep(index: number) {
+    if (!form || form.steps.length <= 1) return;
+    setForm({ ...form, steps: form.steps.filter((_, i) => i !== index) });
+  }
+
+  function updateStep(index: number, field: "provider" | "model", value: string) {
+    if (!form) return;
+    const steps = [...form.steps];
+    steps[index] = { ...steps[index]!, [field]: value };
+    // If provider changed, reset model
+    if (field === "provider") {
+      steps[index]!.model = "";
+    }
+    setForm({ ...form, steps });
+  }
+
+  function toggleRetryOn(value: string) {
+    if (!form) return;
+    const retryOn = form.retryOn.includes(value)
+      ? form.retryOn.filter((v) => v !== value)
+      : [...form.retryOn, value];
+    setForm({ ...form, retryOn });
+  }
+
+  const providerNames = Object.keys(availableModels);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Layers className="h-6 w-6" /> Combo Fallback
+          </h1>
+          <p className="text-sm text-[var(--muted-foreground)] mt-1">
+            Auto-fallback ke provider + model lain saat request gagal
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant={globalEnabled ? "default" : "outline"}
+            size="sm"
+            onClick={toggleGlobal}
+          >
+            {globalEnabled ? <Power className="h-4 w-4 mr-1" /> : <PowerOff className="h-4 w-4 mr-1" />}
+            {globalEnabled ? "Enabled" : "Disabled"}
+          </Button>
+          <Button size="sm" onClick={() => setForm({ ...emptyForm })}>
+            <Plus className="h-4 w-4 mr-1" /> New Rule
+          </Button>
+        </div>
+      </div>
+
+      {message && (
+        <div className="text-sm px-3 py-2 rounded bg-[var(--accent)] text-[var(--accent-foreground)]">
+          {message}
+        </div>
+      )}
+
+      {/* Form */}
+      {form && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center justify-between">
+              {form.id ? "Edit Combo Rule" : "New Combo Rule"}
+              <Button variant="ghost" size="sm" onClick={() => setForm(null)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Name + Trigger */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs font-medium text-[var(--muted-foreground)]">Rule Name</label>
+                <Input
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="e.g. Opus fallback chain"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-[var(--muted-foreground)]">Trigger Model (pattern)</label>
+                <Input
+                  value={form.triggerModel}
+                  onChange={(e) => setForm({ ...form, triggerModel: e.target.value })}
+                  placeholder="e.g. opus, claude-sonnet, cb-opus"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-[var(--muted-foreground)]">Match Type</label>
+                <select
+                  className="w-full h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm"
+                  value={form.matchType}
+                  onChange={(e) => setForm({ ...form, matchType: e.target.value as any })}
+                >
+                  <option value="contains">Contains</option>
+                  <option value="exact">Exact</option>
+                  <option value="prefix">Prefix</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Fallback Steps */}
+            <div>
+              <label className="text-xs font-medium text-[var(--muted-foreground)] mb-2 block">
+                Fallback Chain (in order)
+              </label>
+              <div className="space-y-2">
+                {form.steps.map((step, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <span className="text-xs text-[var(--muted-foreground)] w-6 text-center font-mono">
+                      {i + 1}.
+                    </span>
+                    <select
+                      className="flex-1 h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm"
+                      value={step.provider}
+                      onChange={(e) => updateStep(i, "provider", e.target.value)}
+                    >
+                      <option value="">Select provider...</option>
+                      {providerNames.map((p) => (
+                        <option key={p} value={p}>{p}</option>
+                      ))}
+                    </select>
+                    <select
+                      className="flex-1 h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm"
+                      value={step.model}
+                      onChange={(e) => updateStep(i, "model", e.target.value)}
+                      disabled={!step.provider}
+                    >
+                      <option value="">Select model...</option>
+                      {(availableModels[step.provider] || []).map((m) => (
+                        <option key={m.id} value={m.id}>{m.id}</option>
+                      ))}
+                    </select>
+                    {i > 0 && (
+                      <ArrowDown className="h-4 w-4 text-[var(--muted-foreground)] -rotate-180 opacity-30" />
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => removeStep(i)}
+                      disabled={form.steps.length <= 1}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+              <Button variant="outline" size="sm" className="mt-2" onClick={addStep}>
+                <Plus className="h-3 w-3 mr-1" /> Add Step
+              </Button>
+            </div>
+
+            {/* Options */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-[var(--muted-foreground)]">Max Retries</label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={10}
+                  value={form.maxRetries}
+                  onChange={(e) => setForm({ ...form, maxRetries: Number(e.target.value) })}
+                />
+                <p className="text-xs text-[var(--muted-foreground)] mt-1">0 = try all steps</p>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-[var(--muted-foreground)]">Priority</label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={form.priority}
+                  onChange={(e) => setForm({ ...form, priority: Number(e.target.value) })}
+                />
+                <p className="text-xs text-[var(--muted-foreground)] mt-1">Lower = evaluated first</p>
+              </div>
+            </div>
+
+            {/* Retry On */}
+            <div>
+              <label className="text-xs font-medium text-[var(--muted-foreground)] mb-2 block">
+                Retry On (conditions that trigger fallback)
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {RETRY_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${
+                      form.retryOn.includes(opt.value)
+                        ? "bg-[var(--primary)] text-[var(--primary-foreground)] border-[var(--primary)]"
+                        : "bg-[var(--background)] text-[var(--muted-foreground)] border-[var(--border)] hover:bg-[var(--accent)]"
+                    }`}
+                    onClick={() => toggleRetryOn(opt.value)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-2 pt-2">
+              <Button onClick={saveForm}>
+                {form.id ? "Update Rule" : "Create Rule"}
+              </Button>
+              <Button variant="outline" onClick={() => setForm(null)}>
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Rules List */}
+      {loading ? (
+        <div className="text-sm text-[var(--muted-foreground)]">Loading...</div>
+      ) : rules.length === 0 ? (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <Layers className="h-12 w-12 mx-auto mb-3 text-[var(--muted-foreground)] opacity-40" />
+            <p className="text-[var(--muted-foreground)]">No combo rules yet</p>
+            <p className="text-xs text-[var(--muted-foreground)] mt-1">
+              Create a rule to auto-fallback ke provider lain saat request gagal
+            </p>
+            <Button size="sm" className="mt-4" onClick={() => setForm({ ...emptyForm })}>
+              <Plus className="h-4 w-4 mr-1" /> Create First Rule
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {rules.map((rule) => (
+            <Card key={rule.id} className={!rule.enabled ? "opacity-50" : ""}>
+              <CardContent className="py-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div
+                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                        rule.enabled && globalEnabled ? "bg-green-500" : "bg-gray-400"
+                      }`}
+                    />
+                    <div className="min-w-0">
+                      <div className="font-medium text-sm truncate">
+                        {rule.name || `Rule #${rule.id}`}
+                      </div>
+                      <div className="text-xs text-[var(--muted-foreground)] flex items-center gap-2 mt-0.5">
+                        <span className="font-mono bg-[var(--accent)] px-1.5 py-0.5 rounded">
+                          {rule.matchType}: {rule.triggerModel}
+                        </span>
+                        <span>→</span>
+                        <span>{rule.steps.length} step{rule.steps.length > 1 ? "s" : ""}</span>
+                        <span className="text-[var(--muted-foreground)]">·</span>
+                        <span>max {rule.maxRetries || "∞"} retries</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setExpandedRule(expandedRule === rule.id ? null : rule.id)}
+                    >
+                      {expandedRule === rule.id ? (
+                        <ChevronUp className="h-4 w-4" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4" />
+                      )}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => toggleRule(rule)}>
+                      {rule.enabled ? (
+                        <Power className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <PowerOff className="h-4 w-4" />
+                      )}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => editRule(rule)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => deleteRule(rule.id)}>
+                      <Trash2 className="h-4 w-4 text-red-400" />
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Expanded: show fallback chain */}
+                {expandedRule === rule.id && (
+                  <div className="mt-4 pt-3 border-t border-[var(--border)]">
+                    <div className="text-xs font-medium text-[var(--muted-foreground)] mb-2">
+                      Fallback Chain:
+                    </div>
+                    <div className="space-y-1">
+                      {rule.steps.map((step, i) => (
+                        <div key={i} className="flex items-center gap-2 text-sm">
+                          <span className="text-xs font-mono text-[var(--muted-foreground)] w-5">
+                            {i + 1}.
+                          </span>
+                          <span className="font-medium text-blue-400">{step.provider}</span>
+                          <span className="text-[var(--muted-foreground)]">/</span>
+                          <span className="font-mono text-xs">{step.model}</span>
+                          {i < rule.steps.length - 1 && (
+                            <ArrowDown className="h-3 w-3 text-[var(--muted-foreground)] ml-1" />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {rule.retryOn.map((r) => (
+                        <span
+                          key={r}
+                          className="text-xs px-2 py-0.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)]"
+                        >
+                          {r.replace(/_/g, " ")}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Info */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Cara Kerja Combo</CardTitle>
+        </CardHeader>
+        <CardContent className="text-xs text-[var(--muted-foreground)] space-y-2">
+          <p>
+            Combo otomatis mencoba provider + model lain saat request gagal.
+            Misalnya jika <code className="bg-[var(--accent)] px-1 rounded">cb-opus-4.6</code> di CodeBuddy
+            kehabisan quota, combo bisa fallback ke{" "}
+            <code className="bg-[var(--accent)] px-1 rounded">claude-sonnet-4.5</code> di Kiro.
+          </p>
+          <p>
+            <strong>Trigger Model:</strong> Pattern yang dicocokkan dengan model yang diminta client.
+            <br />
+            <strong>Fallback Chain:</strong> Urutan provider+model yang dicoba saat gagal.
+            <br />
+            <strong>Retry On:</strong> Kondisi error yang memicu fallback (quota habis, rate limit, dll).
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

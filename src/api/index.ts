@@ -11,6 +11,7 @@ import { binApi } from "./bin";
 import { integrationRouter } from "./integration";
 import { oauthRouter } from "./oauth";
 import { backupRouter } from "./backup";
+import { comboRouter } from "./combo";
 
 export const apiRouter = new Hono();
 
@@ -26,6 +27,7 @@ apiRouter.route("/bin", binApi);
 apiRouter.route("/integration", integrationRouter);
 apiRouter.route("/oauth", oauthRouter);
 apiRouter.route("/backup", backupRouter);
+apiRouter.route("/combo", comboRouter);
 
 apiRouter.get("/providers", (c) => {
   return c.json({ data: ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder"] });
