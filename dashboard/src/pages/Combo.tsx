@@ -39,6 +39,18 @@ interface AvailableModels {
   data: Record<string, { id: string; name: string }[]>;
 }
 
+interface ComboStatsResponse {
+  data: Array<{
+    ruleName: string;
+    total: number;
+    success: number;
+    error: number;
+    avgDurationMs: number;
+    steps: Array<{ step: string; count: number }>;
+  }>;
+  recent: any[];
+}
+
 interface FormState {
   id: number | null;
   name: string;
@@ -83,17 +95,21 @@ export default function Combo() {
   const [form, setForm] = useState<FormState | null>(null);
   const [availableModels, setAvailableModels] = useState<Record<string, { id: string; name: string }[]>>({});
   const [expandedRule, setExpandedRule] = useState<number | null>(null);
+  const [stats, setStats] = useState<ComboStatsResponse>({ data: [], recent: [] });
+  const [testingModel, setTestingModel] = useState<string | null>(null);
   const { message, setMessage } = useTimedMessage<string>(null, 3000);
 
   const load = useCallback(async () => {
     try {
-      const [rulesRes, modelsRes] = await Promise.all([
+      const [rulesRes, modelsRes, statsRes] = await Promise.all([
         fetchApi<ComboListResponse>("/api/combo"),
         fetchApi<AvailableModels>("/api/combo/models"),
+        fetchApi<ComboStatsResponse>("/api/combo/stats"),
       ]);
       setRules(rulesRes.data);
       setGlobalEnabled(rulesRes.enabled);
       setAvailableModels(modelsRes.data);
+      setStats(statsRes);
     } catch {
       setRules([]);
     } finally {
@@ -138,6 +154,59 @@ export default function Combo() {
       setMessage("Rule deleted");
     } catch {
       setMessage("Failed to delete rule");
+    }
+  }
+
+  async function testRule(rule: ComboRule) {
+    const model = rule.modelId || rule.triggerModel;
+    setTestingModel(model);
+    try {
+      const res = await fetchApi<any>("/api/combo/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, prompt: "Reply with OK only.", maxTokens: 32 }),
+        timeoutMs: 120_000,
+      });
+      const used = res.comboInfo ? `${res.comboInfo.usedProvider}/${res.comboInfo.usedModel}` : `${res.provider}/${res.responseModel || model}`;
+      setMessage(`Test passed: ${model} → ${used}`);
+      await load();
+    } catch {
+      setMessage(`Test failed for ${model}`);
+    } finally {
+      setTestingModel(null);
+    }
+  }
+
+  async function exportRules() {
+    try {
+      const data = await fetchApi<any>("/api/combo/export");
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `combo-rules-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setMessage("Failed to export rules");
+    }
+  }
+
+  async function importRules() {
+    const raw = prompt("Paste combo export JSON here:");
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      const replace = confirm("Replace existing combo rules? Click Cancel to merge.");
+      const res = await fetchApi<any>("/api/combo/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...parsed, replace }),
+      });
+      setMessage(`Imported ${res.imported || 0} rules`);
+      await load();
+    } catch {
+      setMessage("Failed to import rules");
     }
   }
 
@@ -249,6 +318,12 @@ export default function Combo() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={exportRules}>
+            Export
+          </Button>
+          <Button variant="outline" size="sm" onClick={importRules}>
+            Import
+          </Button>
           <Button
             variant={globalEnabled ? "default" : "outline"}
             size="sm"
@@ -266,6 +341,27 @@ export default function Combo() {
       {message && (
         <div className="text-sm px-3 py-2 rounded bg-[var(--accent)] text-[var(--accent-foreground)]">
           {message}
+        </div>
+      )}
+
+      {stats.data.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {stats.data.slice(0, 3).map((s) => (
+            <Card key={s.ruleName}>
+              <CardContent className="py-3">
+                <div className="text-xs text-[var(--muted-foreground)]">{s.ruleName}</div>
+                <div className="text-2xl font-semibold">{s.total}</div>
+                <div className="text-xs text-[var(--muted-foreground)]">
+                  {s.success} success · {s.error} error · avg {s.avgDurationMs}ms
+                </div>
+                {s.steps[0] && (
+                  <div className="text-xs mt-2 font-mono truncate text-blue-400">
+                    top: {s.steps[0].step} ({s.steps[0].count})
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
         </div>
       )}
 
@@ -516,6 +612,14 @@ export default function Combo() {
                       ) : (
                         <ChevronDown className="h-4 w-4" />
                       )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => testRule(rule)}
+                      disabled={testingModel === (rule.modelId || rule.triggerModel)}
+                    >
+                      {testingModel === (rule.modelId || rule.triggerModel) ? "Testing..." : "Test"}
                     </Button>
                     <Button variant="ghost" size="sm" onClick={() => toggleRule(rule)}>
                       {rule.enabled ? (
