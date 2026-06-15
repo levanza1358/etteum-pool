@@ -98,15 +98,41 @@ statsRouter.get("/", async (c) => {
 
 /**
  * GET /api/stats/requests - Get recent request logs (from request_logs, max 500)
+ *
+ * IMPORTANT: This endpoint intentionally OMITS the heavy `requestBody` and
+ * `responseBody` columns to keep list payloads small. Each row's prompt can be
+ * ~1 MB (system prompt + conversation history), so selecting them here would
+ * mean tens of MB of JSON over the wire just to render a table. The full
+ * bodies are loaded on demand via `GET /api/stats/requests/:id` when the user
+ * opens the detail drawer.
  */
 statsRouter.get("/requests", async (c) => {
   const limit = clampNumber(c.req.query("limit"), 50, 1, 500);
   const offset = clampNumber(c.req.query("offset"), 0, 0, 100_000);
   const provider = c.req.query("provider");
 
+  const lightColumns = {
+    id: requestLogs.id,
+    accountId: requestLogs.accountId,
+    provider: requestLogs.provider,
+    model: requestLogs.model,
+    promptTokens: requestLogs.promptTokens,
+    completionTokens: requestLogs.completionTokens,
+    totalTokens: requestLogs.totalTokens,
+    creditsUsed: requestLogs.creditsUsed,
+    status: requestLogs.status,
+    durationMs: requestLogs.durationMs,
+    errorMessage: requestLogs.errorMessage,
+    accountEmail: requestLogs.accountEmail,
+    accountQuotaBefore: requestLogs.accountQuotaBefore,
+    accountQuotaAfter: requestLogs.accountQuotaAfter,
+    compressionStats: requestLogs.compressionStats,
+    createdAt: requestLogs.createdAt,
+  };
+
   const baseQuery = provider
-    ? db.select().from(requestLogs).where(eq(requestLogs.provider, provider))
-    : db.select().from(requestLogs);
+    ? db.select(lightColumns).from(requestLogs).where(eq(requestLogs.provider, provider))
+    : db.select(lightColumns).from(requestLogs);
 
   const logs = await baseQuery
     .orderBy(desc(requestLogs.createdAt))
@@ -139,9 +165,9 @@ statsRouter.get("/usage", async (c) => {
   const bucketExpr =
     isAll
       ? summaryBucketExpr("month", timeZone)
-      : hours <= 24
+      : hours <= 48
       ? summaryBucketExpr("hour", timeZone)
-      : hours <= 24 * 30
+      : hours <= 24 * 32
         ? summaryBucketExpr("day", timeZone)
         : summaryBucketExpr("month", timeZone);
 

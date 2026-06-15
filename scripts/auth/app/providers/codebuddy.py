@@ -16,6 +16,11 @@ import aiohttp
 from app.errors.codes import ErrorCode
 from app.errors.exceptions import NonRetryableBatcherError, RetryableBatcherError
 from app.providers.base import NormalizedAccount, ProviderAdapter
+from app.providers.browser_utils import (
+    OAUTH_FIREFOX_PREFS,
+    build_camoufox_kwargs,
+    is_browser_crash,
+)
 
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -26,44 +31,17 @@ CODEBUDDY_BASE_URL = os.getenv("BATCHER_CODEBUDDY_BASE_URL", "https://www.codebu
 CODEBUDDY_PLATFORM = (
     os.getenv("BATCHER_CODEBUDDY_PLATFORM", "IDE").strip().upper() or "IDE"
 )
-CODEBUDDY_FETCH_QUOTA_ENABLED = (
-    os.getenv("BATCHER_CODEBUDDY_FETCH_QUOTA", "false").lower() == "true"
-)
 CODEBUDDY_STATE_ENDPOINT = os.getenv(
     "BATCHER_CODEBUDDY_STATE_ENDPOINT",
     f"{CODEBUDDY_BASE_URL}/v2/plugin/auth/state?platform={CODEBUDDY_PLATFORM}",
-)
-CODEBUDDY_TOKEN_POLL_ENDPOINT = os.getenv(
-    "BATCHER_CODEBUDDY_TOKEN_POLL_ENDPOINT",
-    f"{CODEBUDDY_BASE_URL}/v2/plugin/auth/token",
-)
-CODEBUDDY_LOGIN_ACCOUNT_ENDPOINT = os.getenv(
-    "BATCHER_CODEBUDDY_LOGIN_ACCOUNT_ENDPOINT",
-    f"{CODEBUDDY_BASE_URL}/v2/plugin/login/account",
 )
 CODEBUDDY_CONSOLE_LOGIN_ACCOUNT_ENDPOINT = os.getenv(
     "BATCHER_CODEBUDDY_CONSOLE_LOGIN_ACCOUNT_ENDPOINT",
     f"{CODEBUDDY_BASE_URL}/console/login/account",
 )
-CODEBUDDY_ACCOUNTS_ENDPOINT = os.getenv(
-    "BATCHER_CODEBUDDY_ACCOUNTS_ENDPOINT",
-    f"{CODEBUDDY_BASE_URL}/v2/plugin/accounts",
-)
 CODEBUDDY_CONSOLE_ACCOUNTS_ENDPOINT = os.getenv(
     "BATCHER_CODEBUDDY_CONSOLE_ACCOUNTS_ENDPOINT",
     f"{CODEBUDDY_BASE_URL}/console/accounts",
-)
-CODEBUDDY_CONSOLE_VALIDATE_REFRESH_TOKEN_ENDPOINT = os.getenv(
-    "BATCHER_CODEBUDDY_CONSOLE_VALIDATE_REFRESH_TOKEN_ENDPOINT",
-    f"{CODEBUDDY_BASE_URL}/console/validate/refresh-token",
-)
-CODEBUDDY_CONSOLE_LOGIN_ENTERPRISE_ENDPOINT = os.getenv(
-    "BATCHER_CODEBUDDY_CONSOLE_LOGIN_ENTERPRISE_ENDPOINT",
-    f"{CODEBUDDY_BASE_URL}/console/login/enterprise",
-)
-CODEBUDDY_CONSOLE_AUTH_LOGIN_ENDPOINT = os.getenv(
-    "BATCHER_CODEBUDDY_CONSOLE_AUTH_LOGIN_ENDPOINT",
-    f"{CODEBUDDY_BASE_URL}/console/auth/login",
 )
 CODEBUDDY_USER_RESOURCE_ENDPOINT = os.getenv(
     "BATCHER_CODEBUDDY_USER_RESOURCE_ENDPOINT",
@@ -75,12 +53,6 @@ CODEBUDDY_API_KEYS_ENDPOINT = os.getenv(
 )
 CODEBUDDY_REDIRECT_SCHEME = os.getenv(
     "BATCHER_CODEBUDDY_REDIRECT_SCHEME", "codebuddy://"
-)
-CODEBUDDY_POLL_INTERVAL_SECONDS = float(
-    os.getenv("BATCHER_CODEBUDDY_POLL_INTERVAL_SECONDS", "2")
-)
-CODEBUDDY_POLL_TIMEOUT_SECONDS = float(
-    os.getenv("BATCHER_CODEBUDDY_POLL_TIMEOUT_SECONDS", "180")
 )
 # Keep native CodeBuddy flow by default:
 # after Google login, CodeBuddy should route to region page when needed.
@@ -158,113 +130,6 @@ PASSWORD_SELECTORS = [
 ]
 
 
-async def _fill_input(target: Any, selectors: list[str], value: str) -> bool:
-    for selector in selectors:
-        try:
-            handle = await target.query_selector(selector)
-            if not handle:
-                continue
-            if not await handle.is_visible():
-                continue
-
-            # Focus and clear current value.
-            try:
-                await handle.click(timeout=1200)
-            except Exception:
-                pass
-            try:
-                await handle.press("Control+a")
-                await handle.press("Backspace")
-            except Exception:
-                pass
-
-            # Try direct value injection + input/change events.
-            try:
-                await target.evaluate(
-                    """({sel, val}) => {
-                        const el = document.querySelector(sel);
-                        if (!el) return;
-                        el.focus();
-                        const proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
-                        const setter = proto
-                          ? Object.getOwnPropertyDescriptor(proto, 'value')?.set
-                          : null;
-                        if (setter) {
-                            setter.call(el, val);
-                        } else {
-                            el.value = val;
-                        }
-                        el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-                    }""",
-                    {"sel": selector, "val": value},
-                )
-            except Exception:
-                pass
-
-            current = await _read_input_value(target, [selector])
-            if current.strip() == value.strip():
-                return True
-
-            # Fallback: real key typing (slower, but tends to work on guarded inputs).
-            try:
-                await handle.click(timeout=1200)
-                await handle.press("Control+a")
-                await handle.press("Backspace")
-                await target.keyboard.type(value, delay=35)
-            except Exception:
-                continue
-
-            current = await _read_input_value(target, [selector])
-            if current.strip() == value.strip():
-                return True
-
-            # Last resort for guarded inputs.
-            try:
-                await handle.click(timeout=1200)
-                await target.keyboard.insert_text(value)
-            except Exception:
-                continue
-            current = await _read_input_value(target, [selector])
-            if current.strip() == value.strip():
-                return True
-        except Exception:
-            continue
-    return False
-
-
-async def _all_targets(page: Any, preferred: Any | None) -> list[Any]:
-    targets: list[Any] = []
-    seen: set[int] = set()
-
-    def add(obj: Any) -> None:
-        if obj is None:
-            return
-        key = id(obj)
-        if key in seen:
-            return
-        seen.add(key)
-        targets.append(obj)
-
-    add(preferred)
-    add(page)
-    try:
-        for frame in page.frames:
-            add(frame)
-    except Exception:
-        pass
-    return targets
-
-
-async def _fill_input_anywhere(
-    page: Any, preferred: Any | None, selectors: list[str], value: str
-) -> bool:
-    for target in await _all_targets(page, preferred):
-        if await _fill_input(target, selectors, value):
-            return True
-    return False
-
-
 def _codebuddy_auth_debug_enabled() -> bool:
     return os.getenv("BATCHER_CODEBUDDY_AUTH_DEBUG", "false").lower() == "true"
 
@@ -272,6 +137,24 @@ def _codebuddy_auth_debug_enabled() -> bool:
 def _codebuddy_auth_debug(message: str) -> None:
     if _codebuddy_auth_debug_enabled():
         print(f"[codebuddy-auth] {message}", flush=True)
+
+
+def _emit_oauth_progress(message: str) -> None:
+    """Emit a progress event visible to the TypeScript runner during OAuth flow."""
+    try:
+        print(
+            json.dumps(
+                {
+                    "type": "progress",
+                    "provider": "codebuddy",
+                    "step": "oauth",
+                    "message": message,
+                }
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
 
 
 async def _target_url(target: Any) -> str:
@@ -455,89 +338,86 @@ async def _fill_google_password_step(target: Any, password: str) -> bool:
     return False
 
 
-async def _fill_google_email_anywhere(
-    page: Any, preferred: Any | None, email: str
-) -> bool:
-    for target in await _all_targets(page, preferred):
-        if await _fill_google_email_step(target, email):
-            return True
-    return False
-
-
-async def _fill_google_password_anywhere(
-    page: Any, preferred: Any | None, password: str
-) -> bool:
-    for target in await _all_targets(page, preferred):
-        if await _fill_google_password_step(target, password):
-            return True
-    return False
-
-
-async def _read_input_value(target: Any, selectors: list[str]) -> str:
-    for selector in selectors:
-        try:
-            handle = await target.query_selector(selector)
-            if not handle:
-                continue
-            value = await handle.input_value()
-            if value is not None:
-                return str(value)
-        except Exception:
-            continue
-    return ""
-
-
-async def _read_input_value_anywhere(
-    page: Any, preferred: Any | None, selectors: list[str]
-) -> str:
-    for target in await _all_targets(page, preferred):
-        value = await _read_input_value(target, selectors)
-        if value:
-            return value
-    return ""
-
-
 async def _wait_for_google_email_transition(target: Any) -> bool:
-    try:
-        await target.wait_for_function(
-            """() => {
-                const host = window.location.host || '';
-                const path = window.location.pathname || '';
-                const visible = (selectors) => selectors.some((sel) =>
-                    Array.from(document.querySelectorAll(sel)).some((el) => el.offsetParent !== null)
-                );
-                const hasEmail = visible(['#identifierId', 'input[name="identifier"]', 'input[type="email"]']);
-                const hasPassword = visible(['input[name="Passwd"]', 'input[type="password"]']);
-                if (!host.includes('accounts.google.com')) return true;
-                if (hasPassword) return true;
-                if (path.includes('/signin/challenge/pwd')) return true;
-                return !hasEmail && !path.includes('/signin/identifier');
-            }""",
-            timeout=10000,
-        )
-        return True
-    except Exception:
-        return False
+    """Spam-click Next until the email step is no longer visible (max ~15s)."""
+    deadline = time.monotonic() + 15.0
+    click_interval = 0.8  # seconds between clicks
+    last_click = 0.0
+    while time.monotonic() < deadline:
+        # Check if we've left the email step
+        try:
+            still_email = await target.evaluate(
+                """() => {
+                    const host = window.location.host || '';
+                    const path = window.location.pathname || '';
+                    const hasEmail = Array.from(
+                        document.querySelectorAll('#identifierId, input[name="identifier"], input[type="email"]')
+                    ).some(el => el.offsetParent !== null);
+                    const hasPassword = Array.from(
+                        document.querySelectorAll('input[name="Passwd"], input[type="password"]')
+                    ).some(el => el.offsetParent !== null);
+                    if (!host.includes('accounts.google.com')) return false;
+                    if (hasPassword) return false;
+                    if (path.includes('/signin/challenge/pwd')) return false;
+                    return hasEmail || path.includes('/signin/identifier');
+                }"""
+            )
+        except Exception:
+            # If evaluate fails (page navigated), transition happened
+            return True
+
+        if not still_email:
+            return True
+
+        # Still on email step — spam click Next
+        now = time.monotonic()
+        if now - last_click >= click_interval:
+            await _click_google_next(target)
+            last_click = now
+            _codebuddy_auth_debug("email transition: spam-clicked Next")
+
+        await asyncio.sleep(0.3)
+    _codebuddy_auth_debug("email transition: deadline exceeded (15s)")
+    return False
 
 
 async def _wait_for_google_password_transition(target: Any) -> bool:
-    try:
-        await target.wait_for_function(
-            """() => {
-                const host = window.location.host || '';
-                const path = window.location.pathname || '';
-                const hasPassword = Array.from(
-                    document.querySelectorAll('input[name="Passwd"], input[type="password"]')
-                ).some((el) => el.offsetParent !== null);
-                if (!host.includes('accounts.google.com')) return true;
-                if (!path.includes('/challenge/pwd')) return true;
-                return !hasPassword;
-            }""",
-            timeout=12000,
-        )
-        return True
-    except Exception:
-        return False
+    """Spam-click Next until the password step is no longer visible (max ~18s)."""
+    deadline = time.monotonic() + 18.0
+    click_interval = 0.8  # seconds between clicks
+    last_click = 0.0
+    while time.monotonic() < deadline:
+        # Check if we've left the password step
+        try:
+            still_password = await target.evaluate(
+                """() => {
+                    const host = window.location.host || '';
+                    const path = window.location.pathname || '';
+                    const hasPassword = Array.from(
+                        document.querySelectorAll('input[name="Passwd"], input[type="password"]')
+                    ).some(el => el.offsetParent !== null);
+                    if (!host.includes('accounts.google.com')) return false;
+                    if (!path.includes('/challenge/pwd')) return false;
+                    return hasPassword;
+                }"""
+            )
+        except Exception:
+            # If evaluate fails (page navigated), transition happened
+            return True
+
+        if not still_password:
+            return True
+
+        # Still on password step — spam click Next
+        now = time.monotonic()
+        if now - last_click >= click_interval:
+            await _click_google_next(target)
+            last_click = now
+            _codebuddy_auth_debug("password transition: spam-clicked Next")
+
+        await asyncio.sleep(0.3)
+    _codebuddy_auth_debug("password transition: deadline exceeded (18s)")
+    return False
 
 
 async def _is_password_step(target: Any) -> bool:
@@ -1115,45 +995,6 @@ async def _handle_google_consent_continue(page: Any) -> bool:
         return False
 
 
-async def _detect_google_blocking_challenge(page: Any) -> str | None:
-    try:
-        current_url = page.url
-    except Exception:
-        current_url = ""
-    if "accounts.google.com" not in current_url:
-        return None
-
-    try:
-        marker = str(
-            await page.evaluate(
-                """() => {
-                    const text = (document.body?.innerText || '').toLowerCase();
-                    const markers = [
-                        'captcha',
-                        'try again later',
-                        'this browser or app may not be secure',
-                        'this browser may not be secure',
-                        'unusual traffic',
-                        "verify it's you",
-                        'verify it’s you',
-                        "confirm it's you",
-                        'confirm it’s you',
-                    ];
-                    for (const candidate of markers) {
-                        if (text.includes(candidate)) return candidate;
-                    }
-                    if ((window.location.pathname || '').includes('/challenge/')) {
-                        return 'google challenge';
-                    }
-                    return '';
-                }"""
-            )
-        ).strip()
-        return marker or None
-    except Exception:
-        return None
-
-
 async def _handle_codebuddy_region_select(page: Any) -> bool:
     try:
         current_url = page.url
@@ -1473,192 +1314,137 @@ async def _build_cookie_header_from_page(page: Any, base_url: str) -> str:
     return _build_cookie_header_from_dict(cookies)
 
 
-async def _build_codebuddy_billing_cookie_header(page: Any) -> str:
-    return await _build_cookie_header_from_page(page, CODEBUDDY_USER_RESOURCE_ENDPOINT)
-
-
 async def _create_api_key_via_page(
-    page: Any, user_enterprise_id: str = "personal-edition-user-id"
+    page: Any,
+    user_enterprise_id: str = "personal-edition-user-id",
+    *,
+    retries: int = 1,
+    key_prefix: str = "key",
 ) -> str | None:
+    """Create an API key via page.evaluate() → fetch from browser context.
+
+    This leverages the browser's active session cookies (credentials: 'include')
+    to authenticate the request — no explicit token/cookie header needed.
+
+    Args:
+        page: Playwright page with active CodeBuddy session.
+        user_enterprise_id: Enterprise ID (default works for personal accounts).
+        retries: Number of retry attempts on failure (default 1 = no retry).
+        key_prefix: Prefix for the generated key name.
+    """
     import time
 
-    timestamp = int(time.time())
-    key_name = f"kiro-{timestamp}"
+    for attempt in range(1, retries + 1):
+        timestamp = int(time.time())
+        key_name = f"{key_prefix}-{timestamp}"
 
-    try:
-        result = await page.evaluate(
-            """async ({ url, body }) => {
-                try {
-                    const resp = await fetch(url, {
-                        method: 'POST',
-                        credentials: 'include',
-                        headers: {
-                            'Accept': 'application/json, text/plain, */*',
-                            'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest',
-                        },
-                        body: JSON.stringify(body),
-                    });
-                    const text = await resp.text();
-                    let json = null;
-                    try { json = JSON.parse(text); } catch {}
-                    return { status: resp.status, text, json };
-                } catch (err) {
-                    return { status: 0, text: String(err), json: null };
-                }
-            }""",
-            {
-                "url": CODEBUDDY_API_KEYS_ENDPOINT,
-                "body": {
-                    "name": key_name,
-                    "expire_in_days": -1,
-                    "user_enterprise_id": user_enterprise_id,
+        if attempt > 1:
+            backoff = min(2.0 * (attempt - 1), 5.0)
+            _codebuddy_auth_debug(
+                f"create api key retry {attempt}/{retries} backoff={backoff:.1f}s"
+            )
+            await asyncio.sleep(backoff)
+
+        try:
+            result = await page.evaluate(
+                """async ({ url, body }) => {
+                    try {
+                        const resp = await fetch(url, {
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: {
+                                'Accept': 'application/json, text/plain, */*',
+                                'Content-Type': 'application/json',
+                                'X-Requested-With': 'XMLHttpRequest',
+                            },
+                            body: JSON.stringify(body),
+                        });
+                        const text = await resp.text();
+                        let json = null;
+                        try { json = JSON.parse(text); } catch {}
+                        return { status: resp.status, text, json };
+                    } catch (err) {
+                        return { status: 0, text: String(err), json: null };
+                    }
+                }""",
+                {
+                    "url": CODEBUDDY_API_KEYS_ENDPOINT,
+                    "body": {
+                        "name": key_name,
+                        "expire_in_days": -1,
+                        "user_enterprise_id": user_enterprise_id,
+                    },
                 },
-            },
-        )
-    except Exception as exc:
-        _codebuddy_auth_debug(f"create api key via page error={exc}")
-        return None
+            )
+        except Exception as exc:
+            _codebuddy_auth_debug(
+                f"create api key via page error attempt={attempt} err={exc}"
+            )
+            if attempt < retries:
+                continue
+            return None
 
-    status = int(result.get("status") or 0)
-    payload = result.get("json")
-    body_text = str(result.get("text") or "")
+        status = int(result.get("status") or 0)
+        payload = result.get("json")
+        body_text = str(result.get("text") or "")
 
-    if _codebuddy_auth_debug_enabled():
-        code = payload.get("code") if isinstance(payload, dict) else None
-        _codebuddy_auth_debug(f"create api key via page status={status} code={code}")
+        if _codebuddy_auth_debug_enabled():
+            code = payload.get("code") if isinstance(payload, dict) else None
+            _codebuddy_auth_debug(
+                f"create api key via page attempt={attempt} status={status} code={code}"
+            )
 
-    if status != 200 or not isinstance(payload, dict):
-        if status and body_text:
-            _codebuddy_auth_debug(f"create api key via page body={body_text[:160]}")
-        return None
-
-    if payload.get("code") != 0:
-        return None
-
-    data = payload.get("data") or {}
-    api_key = str(data.get("key") or "").strip()
-
-    if api_key:
-        _codebuddy_auth_debug(f"api key created key={api_key[:15]}...")
-        return api_key
-
-    return None
-
-
-async def _set_region_with_cookies(cookie_data: dict[str, Any]) -> bool:
-    """Set region (Singapore) via HTTP request using cookies"""
-    cookies = cookie_data.get("cookies", [])
-    if not cookies:
-        return False
-
-    cookie_header = _build_cookie_header_from_dict(cookies)
-    if not cookie_header:
-        return False
-
-    headers = {
-        **WEB_HEADERS,
-        "Cookie": cookie_header,
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/plain, */*",
-    }
-
-    payload_body = {
-        "attributes": {
-            "countryCode": ["65"],
-            "countryFullName": ["Singapore"],
-            "countryName": ["SG"],
-        }
-    }
-
-    timeout = aiohttp.ClientTimeout(total=20)
-    try:
-        async with _make_session(timeout, headers) as client:
-            async with client.post(
-                CODEBUDDY_CONSOLE_LOGIN_ACCOUNT_ENDPOINT,
-                json=payload_body,
-                proxy=_req_proxy(client),
-            ) as resp:
-                status = int(resp.status)
-                body_text = await resp.text()
-
-                if status != 200:
-                    _codebuddy_auth_debug(
-                        f"set region with cookies status={status} body={body_text[:160]}"
-                    )
-                    return False
-
-                payload = await resp.json()
-                code = payload.get("code") if isinstance(payload, dict) else None
+        if status != 200 or not isinstance(payload, dict):
+            if status and body_text:
                 _codebuddy_auth_debug(
-                    f"set region with cookies status={status} code={code}"
+                    f"create api key via page body={body_text[:200]}"
                 )
+            if attempt < retries:
+                continue
+            return None
 
-                return status == 200 and code == 0
-    except Exception as exc:
-        _codebuddy_auth_debug(f"set region with cookies error={exc}")
-        return False
+        if payload.get("code") != 0:
+            msg = payload.get("msg") or payload.get("message") or ""
+            _codebuddy_auth_debug(
+                f"create api key non-zero code={payload.get('code')} msg={msg}"
+            )
+            if attempt < retries:
+                continue
+            return None
 
+        data = payload.get("data") or {}
+        api_key = str(data.get("key") or "").strip()
 
-async def _create_api_key_with_cookies(
-    cookie_data: dict[str, Any], user_enterprise_id: str = "personal-edition-user-id"
-) -> str | None:
-    import time
+        if api_key:
+            _codebuddy_auth_debug(
+                f"api key created key={api_key[:15]}... name={key_name}"
+            )
+            return api_key
 
-    cookies = cookie_data.get("cookies", [])
-    if not cookies:
+        if attempt < retries:
+            continue
         return None
-
-    cookie_header = _build_cookie_header_from_dict(cookies)
-    if not cookie_header:
-        return None
-
-    headers = {
-        **WEB_HEADERS,
-        "Cookie": cookie_header,
-        "Content-Type": "application/json",
-    }
-
-    timestamp = int(time.time())
-    key_name = f"kiro-{timestamp}"
-
-    payload_body = {
-        "name": key_name,
-        "expire_in_days": -1,
-        "user_enterprise_id": user_enterprise_id,
-    }
-
-    timeout = aiohttp.ClientTimeout(total=20)
-    try:
-        async with _make_session(timeout, headers) as client:
-            async with client.post(
-                CODEBUDDY_API_KEYS_ENDPOINT, json=payload_body, proxy=_req_proxy(client)
-            ) as resp:
-                status = int(resp.status)
-                body_text = await resp.text()
-
-                if status != 200:
-                    _codebuddy_auth_debug(
-                        f"create api key with cookies status={status} body={body_text[:160]}"
-                    )
-                    return None
-
-                payload = await resp.json()
-    except Exception as exc:
-        _codebuddy_auth_debug(f"create api key with cookies error={exc}")
-        return None
-
-    if payload.get("code") != 0:
-        return None
-
-    data = payload.get("data") or {}
-    api_key = str(data.get("key") or "").strip()
-
-    if api_key:
-        _codebuddy_auth_debug(f"api key created with cookies key={api_key[:15]}...")
-        return api_key
 
     return None
+
+
+async def _create_api_key_fast(page: Any) -> str | None:
+    """Create API key directly via page.evaluate() — no region, no enterprise ID fetch.
+
+    Proven via live testing:
+    - No region selection required
+    - Hardcoded 'personal-edition-user-id' works for all personal accounts
+    - Works even on restricted/error pages as long as session cookies are active
+
+    Retries up to 3 times with exponential backoff.
+    """
+    _codebuddy_auth_debug("creating API key directly (skip region)")
+    return await _create_api_key_via_page(
+        page,
+        user_enterprise_id="personal-edition-user-id",
+        retries=3,
+        key_prefix="key",
+    )
 
 
 async def _ensure_region_with_retry(
@@ -1698,150 +1484,6 @@ async def _ensure_region_with_retry(
 
     _codebuddy_auth_debug(f"region selection failed after {max_retries} attempts")
     return False
-
-
-async def _open_codebuddy_usage_page(page: Any) -> bool:
-    if page is None:
-        return False
-
-    usage_url = f"{CODEBUDDY_BASE_URL}/profile/usage"
-    try:
-        _codebuddy_auth_debug(f"usage page goto={usage_url}")
-        await page.goto(usage_url, wait_until="domcontentloaded")
-        try:
-            await page.wait_for_load_state("networkidle", timeout=8000)
-        except Exception:
-            pass
-        await asyncio.sleep(1.0)
-        return True
-    except Exception as exc:
-        _codebuddy_auth_debug(f"usage page goto failed err={exc}")
-        return False
-
-
-async def _claim_bonus(page: Any) -> bool:
-    try:
-        btn = page.locator("button", has_text="Claim Now")
-        if await btn.count() == 0:
-            _codebuddy_auth_debug("claim button not found — may already be claimed")
-            return False
-
-        is_disabled = await btn.get_attribute("disabled")
-        if is_disabled is not None:
-            _codebuddy_auth_debug("claim button is disabled — already claimed")
-            return False
-
-        await btn.click()
-        _codebuddy_auth_debug("clicked Claim Now")
-        return True
-    except Exception as exc:
-        _codebuddy_auth_debug(f"claim bonus click failed err={exc}")
-        return False
-
-
-async def _wait_activity_credits(page: Any, timeout: float = 30.0) -> bool:
-    try:
-        for _ in range(int(timeout / 2)):
-            result = await page.evaluate(
-                """() => {
-                    const allDivs = document.querySelectorAll('div');
-                    for (const div of allDivs) {
-                        const text = div.textContent || '';
-                        if (text.includes('Activity Credits') && text.includes('Active')) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }"""
-            )
-            if result:
-                _codebuddy_auth_debug("activity credits card detected")
-                return True
-            await asyncio.sleep(2.0)
-
-        _codebuddy_auth_debug("activity credits card not found after timeout")
-        return False
-    except Exception as exc:
-        _codebuddy_auth_debug(f"wait activity credits failed err={exc}")
-        return False
-
-
-async def _scrape_usage_credits_from_html(page: Any) -> dict[str, float] | None:
-    if page is None:
-        return None
-
-    for attempt in range(4):
-        if attempt > 0:
-            await asyncio.sleep(2.0 + attempt * 1.0)
-
-        try:
-            result = await page.evaluate(
-                """() => {
-                    let activityLeft = null;
-                    let planLeft = null;
-                    const body = document.body ? document.body.innerText : '';
-
-                    const allDivs = document.querySelectorAll('div');
-                    for (const div of allDivs) {
-                        const rows = div.querySelectorAll('.flex.justify-between');
-                        if (rows.length === 0) continue;
-
-                        const cardText = div.textContent || '';
-                        for (const row of rows) {
-                            const cells = row.querySelectorAll('div');
-                            for (const cell of cells) {
-                                const t = cell.textContent.trim();
-                                const match = t.match(/([\\d.]+)\\s*left/i);
-                                if (!match) continue;
-                                const val = parseFloat(match[1]);
-
-                                if (cardText.includes('Activity Credits') && activityLeft === null) {
-                                    activityLeft = val;
-                                } else if ((cardText.includes('Expiration Date') || cardText.includes('Pro Plan') || cardText.includes('Plan Trial')) && planLeft === null) {
-                                    planLeft = val;
-                                }
-                            }
-                        }
-                    }
-
-                    return { activityLeft, planLeft, bodyLen: body.length };
-                }"""
-            )
-        except Exception as exc:
-            _codebuddy_auth_debug(
-                f"scrape usage credits attempt={attempt + 1} err={exc}"
-            )
-            continue
-
-        _codebuddy_auth_debug(
-            f"scrape attempt={attempt + 1} activity={result.get('activityLeft')} plan={result.get('planLeft')} bodyLen={result.get('bodyLen')}"
-        )
-
-        if result.get("planLeft") is not None:
-            break
-    else:
-        result = {"activityLeft": None, "planLeft": None}
-
-    activity_left = result.get("activityLeft")
-    plan_left = result.get("planLeft")
-
-    if plan_left is None:
-        _codebuddy_auth_debug("pro plan credit not found on usage page")
-        return None
-
-    activity_val = float(activity_left) if activity_left is not None else 0.0
-    plan_val = float(plan_left)
-    total = activity_val + plan_val
-
-    _codebuddy_auth_debug(
-        f"scraped credits activity={activity_val} plan={plan_val} total={total}"
-    )
-
-    return {
-        "credit_capacity_size": total,
-        "credit_capacity_remain": total,
-        "credit_capacity_used": 0.0,
-    }
 
 
 async def _fetch_user_resource_credit_via_page(page: Any) -> dict[str, float] | None:
@@ -2029,156 +1671,6 @@ async def _submit_region_via_page(page: Any) -> bool:
     return True
 
 
-async def _open_profile_and_check_region(page: Any) -> tuple[bool, str]:
-    profile_url = f"{CODEBUDDY_BASE_URL}/profile"
-    try:
-        await page.goto(profile_url, wait_until="domcontentloaded", timeout=15000)
-        try:
-            await page.wait_for_load_state("networkidle", timeout=6000)
-        except Exception:
-            pass
-        await asyncio.sleep(0.6)
-    except Exception as exc:
-        _codebuddy_auth_debug(f"profile probe goto failed err={exc}")
-        return False, ""
-
-    try:
-        current_url = str(page.url or "")
-    except Exception:
-        current_url = ""
-    parsed = urlparse(current_url) if current_url else None
-    path = parsed.path if parsed else ""
-    is_profile = bool(path.startswith("/profile"))
-    _codebuddy_auth_debug(
-        f"profile probe url={current_url or '-'} is_profile={is_profile}"
-    )
-    return is_profile, current_url
-
-
-async def _ensure_region_profile_access(page: Any, *, max_attempts: int = 2) -> bool:
-    for attempt in range(1, max_attempts + 1):
-        is_profile, _ = await _open_profile_and_check_region(page)
-        if is_profile:
-            return True
-        forced = await _submit_region_via_page(page)
-        _codebuddy_auth_debug(f"region retry attempt={attempt} forced={forced}")
-        await asyncio.sleep(0.8)
-    is_profile, _ = await _open_profile_and_check_region(page)
-    return is_profile
-
-
-async def _submit_region_with_bearer_via_page(page: Any, bearer: str) -> bool:
-    token = str(bearer or "").strip()
-    if not token:
-        return False
-    try:
-        result = await page.evaluate(
-            """async ({ url, token, body }) => {
-                try {
-                    const resp = await fetch(url, {
-                        method: 'POST',
-                        credentials: 'include',
-                        headers: {
-                            'Accept': 'application/json, text/plain, */*',
-                            'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest',
-                            'Authorization': `Bearer ${token}`,
-                        },
-                        body: JSON.stringify(body),
-                    });
-                    const text = await resp.text();
-                    let json = null;
-                    try { json = JSON.parse(text); } catch {}
-                    return { status: resp.status, text, json };
-                } catch (err) {
-                    return { status: 0, text: String(err), json: null };
-                }
-            }""",
-            {
-                "url": CODEBUDDY_CONSOLE_LOGIN_ACCOUNT_ENDPOINT,
-                "token": token,
-                "body": {
-                    "attributes": {
-                        "countryCode": ["65"],
-                        "countryFullName": ["Singapore"],
-                        "countryName": ["SG"],
-                    }
-                },
-            },
-        )
-    except Exception as exc:
-        _codebuddy_auth_debug(f"force region with bearer error={exc}")
-        return False
-
-    status = int(result.get("status") or 0)
-    payload = result.get("json")
-    body = str(result.get("text") or "")
-    code = payload.get("code") if isinstance(payload, dict) else None
-    _codebuddy_auth_debug(f"force region with bearer status={status} code={code}")
-    if status == 200 and isinstance(payload, dict) and payload.get("code") == 0:
-        return True
-    if status and body:
-        _codebuddy_auth_debug(f"force region with bearer body={body[:160]}")
-    return False
-
-
-async def _ensure_region_after_token(
-    page: Any, bearer: str, *, max_attempts: int = 2
-) -> bool:
-    for attempt in range(1, max_attempts + 1):
-        forced = await _submit_region_with_bearer_via_page(page, bearer)
-        if not forced:
-            forced = await _submit_region_via_page(page)
-        _codebuddy_auth_debug(f"region post-token attempt={attempt} forced={forced}")
-        await asyncio.sleep(0.8)
-        is_profile, _ = await _open_profile_and_check_region(page)
-        if is_profile:
-            return True
-    is_profile, _ = await _open_profile_and_check_region(page)
-    return is_profile
-
-
-async def _validate_refresh_token_via_page(page: Any) -> bool:
-    status, payload, body = await _codebuddy_request_via_page(
-        page,
-        "GET",
-        CODEBUDDY_CONSOLE_VALIDATE_REFRESH_TOKEN_ENDPOINT,
-    )
-    code = payload.get("code") if isinstance(payload, dict) else None
-    _codebuddy_auth_debug(
-        f"validate refresh-token via page status={status} code={code}"
-    )
-    if status == 200 and isinstance(payload, dict) and payload.get("code") == 0:
-        return True
-    if status and body:
-        _codebuddy_auth_debug(f"validate refresh-token via page body={body[:160]}")
-    return False
-
-
-async def _console_login_enterprise_via_page(
-    page: Any, state: str
-) -> dict[str, Any] | None:
-    state = str(state or "").strip()
-    if not state:
-        return None
-
-    status, payload, body = await _codebuddy_request_via_page(
-        page,
-        "POST",
-        f"{CODEBUDDY_CONSOLE_LOGIN_ENTERPRISE_ENDPOINT}?state={state}",
-    )
-    code = payload.get("code") if isinstance(payload, dict) else None
-    has_token = bool(((payload or {}).get("data") or {}).get("accessToken"))
-    _codebuddy_auth_debug(
-        f"console login enterprise via page status={status} code={code} has_token={has_token}"
-    )
-    if status == 200 and isinstance(payload, dict) and payload.get("code") == 0:
-        return payload
-    if status and body:
-        _codebuddy_auth_debug(f"console login enterprise via page body={body[:160]}")
-    return None
-
-
 async def _fetch_console_accounts(
     cookie_header: str, referer: str = ""
 ) -> dict[str, Any] | None:
@@ -2213,212 +1705,6 @@ async def _fetch_console_accounts(
     if payload.get("code") != 0 or not accounts:
         return None
     return payload
-
-
-async def _codebuddy_console_request(
-    method: str,
-    url: str,
-    cookie_header: str,
-    *,
-    referer: str = "",
-    params: dict[str, str] | None = None,
-    allow_redirects: bool = False,
-) -> tuple[int, dict[str, Any] | None, str, str]:
-    cookie_header = str(cookie_header or "").strip()
-    if not cookie_header:
-        return 0, None, "", ""
-
-    headers = {
-        **WEB_HEADERS,
-        "Cookie": cookie_header,
-        "Origin": CODEBUDDY_BASE_URL,
-    }
-    if referer:
-        headers["Referer"] = referer
-
-    timeout = aiohttp.ClientTimeout(total=20)
-    try:
-        async with _make_session(timeout, headers) as client:
-            async with client.request(
-                method.upper(),
-                url,
-                params=params,
-                allow_redirects=allow_redirects,
-                proxy=_req_proxy(client),
-            ) as resp:
-                status = int(resp.status)
-                final_url = str(resp.url)
-                body = await resp.text()
-    except Exception as exc:
-        _codebuddy_auth_debug(
-            f"console request failed method={method.upper()} url={url} err={exc}"
-        )
-        return 0, None, "", ""
-
-    payload: dict[str, Any] | None = None
-    try:
-        parsed = json.loads(body)
-        if isinstance(parsed, dict):
-            payload = parsed
-    except Exception:
-        payload = None
-
-    return status, payload, body, final_url
-
-
-async def _validate_refresh_token(cookie_header: str, referer: str = "") -> bool:
-    status, payload, body, _ = await _codebuddy_console_request(
-        "GET",
-        CODEBUDDY_CONSOLE_VALIDATE_REFRESH_TOKEN_ENDPOINT,
-        cookie_header,
-        referer=referer,
-    )
-    code = payload.get("code") if isinstance(payload, dict) else None
-    _codebuddy_auth_debug(f"validate refresh-token status={status} code={code}")
-    if status == 200 and isinstance(payload, dict) and payload.get("code") == 0:
-        return True
-    if status and body:
-        _codebuddy_auth_debug(f"validate refresh-token body={body[:160]}")
-    return False
-
-
-async def _console_login_enterprise(
-    cookie_header: str,
-    state: str,
-    *,
-    referer: str = "",
-    enterprise_id: str = "",
-) -> dict[str, Any] | None:
-    state = str(state or "").strip()
-    if not state:
-        return None
-
-    endpoint = CODEBUDDY_CONSOLE_LOGIN_ENTERPRISE_ENDPOINT
-    enterprise_id = str(enterprise_id or "").strip()
-    if enterprise_id:
-        endpoint = f"{endpoint.rstrip('/')}/{enterprise_id}"
-
-    status, payload, body, _ = await _codebuddy_console_request(
-        "POST",
-        endpoint,
-        cookie_header,
-        referer=referer,
-        params={"state": state},
-    )
-    code = payload.get("code") if isinstance(payload, dict) else None
-    has_token = bool(((payload or {}).get("data") or {}).get("accessToken"))
-    _codebuddy_auth_debug(
-        f"console login enterprise status={status} code={code} has_token={has_token}"
-    )
-    if status == 200 and isinstance(payload, dict) and payload.get("code") == 0:
-        return payload
-    if status and body:
-        _codebuddy_auth_debug(f"console login enterprise body={body[:160]}")
-    return None
-
-
-async def _console_auth_login(
-    cookie_header: str,
-    state: str,
-    *,
-    referer: str = "",
-    platform: str = CODEBUDDY_PLATFORM,
-    domain: str = "",
-) -> bool:
-    state = str(state or "").strip()
-    domain = str(domain or "").strip() or urlparse(CODEBUDDY_BASE_URL).netloc
-    if not state:
-        return False
-
-    status, payload, body, final_url = await _codebuddy_console_request(
-        "GET",
-        CODEBUDDY_CONSOLE_AUTH_LOGIN_ENDPOINT,
-        cookie_header,
-        referer=referer,
-        params={"platform": platform, "state": state, "domain": domain},
-        allow_redirects=False,
-    )
-    code = payload.get("code") if isinstance(payload, dict) else None
-    _codebuddy_auth_debug(
-        f"console auth login status={status} code={code} final_url={final_url or '-'}"
-    )
-    if status in (200, 302):
-        return True
-    if status and body:
-        _codebuddy_auth_debug(f"console auth login body={body[:160]}")
-    return False
-
-
-async def _complete_started_with_cookie(
-    cookie_header: str, state: str, referer: str = ""
-) -> bool:
-    cookie_header = str(cookie_header or "").strip()
-    if not cookie_header or not state:
-        return False
-
-    started_url = (
-        f"{CODEBUDDY_BASE_URL}/started?platform={CODEBUDDY_PLATFORM}&state={state}"
-    )
-    headers = {
-        **WEB_HEADERS,
-        "Cookie": cookie_header,
-    }
-    if referer:
-        headers["Referer"] = referer
-
-    try:
-        _codebuddy_auth_debug(f"started request={started_url}")
-        timeout = aiohttp.ClientTimeout(total=20)
-        async with _make_session(timeout, headers) as client:
-            async with client.get(
-                started_url, allow_redirects=True, proxy=_req_proxy(client)
-            ) as resp:
-                final_url = str(resp.url)
-                status = int(resp.status)
-                body = await resp.text()
-        _codebuddy_auth_debug(f"started status={status} final_url={final_url}")
-        if status >= 500:
-            return False
-        if status == 404:
-            _codebuddy_auth_debug(f"started body={body[:160]}")
-            return False
-        return True
-    except Exception as exc:
-        _codebuddy_auth_debug(f"started request failed err={exc}")
-        return False
-
-
-async def _complete_started_in_browser(page: Any, state: str) -> bool:
-    if not state:
-        return False
-
-    started_url = (
-        f"{CODEBUDDY_BASE_URL}/started?platform={CODEBUDDY_PLATFORM}&state={state}"
-    )
-    try:
-        _codebuddy_auth_debug(f"started browser goto={started_url}")
-        await page.goto(started_url, wait_until="domcontentloaded", timeout=15000)
-    except Exception as exc:
-        _codebuddy_auth_debug(f"started browser goto failed err={exc}")
-
-    for _ in range(20):
-        try:
-            current_url = str(page.url)
-        except Exception:
-            current_url = ""
-        if current_url.startswith(CODEBUDDY_REDIRECT_SCHEME):
-            _codebuddy_auth_debug(f"started browser redirect url={current_url}")
-            return True
-        parsed = urlparse(current_url) if current_url else None
-        if (
-            parsed
-            and parsed.netloc == urlparse(CODEBUDDY_BASE_URL).netloc
-            and parsed.path == "/started"
-        ):
-            _codebuddy_auth_debug(f"started browser landed url={current_url}")
-            return True
-        await asyncio.sleep(0.5)
-    return False
 
 
 def _credit_from_resource_payload(
@@ -2537,37 +1823,20 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                     "codebuddy auth/state missing state or authUrl",
                 )
 
-            from browserforge.fingerprints import Screen
             from camoufox.async_api import AsyncCamoufox
 
-            camoufox_kwargs = {
-                "headless": os.getenv("BATCHER_CAMOUFOX_HEADLESS", "true").lower() == "true"
-                == "true",
-                "os": "windows",
-                "block_webrtc": True,
-                "disable_coop": True,
-                "humanize": False,
-                "screen": Screen(max_width=1920, max_height=1080),
-            }
-            proxy_url = _get_proxy_url()
-            if proxy_url:
-                from urllib.parse import urlparse as _urlparse
-
-                _parsed = _urlparse(proxy_url)
-                _proxy_cfg = {
-                    "server": f"{_parsed.scheme}://{_parsed.hostname}:{_parsed.port}"
-                }
-                if _parsed.username:
-                    _proxy_cfg["username"] = _parsed.username
-                if _parsed.password:
-                    _proxy_cfg["password"] = _parsed.password
-                camoufox_kwargs["proxy"] = _proxy_cfg
-                camoufox_kwargs["geoip"] = True
+            camoufox_kwargs = build_camoufox_kwargs(
+                proxy_url=_get_proxy_url() or "",
+                default_timeout=30000,
+                disable_coop=True,
+                firefox_user_prefs=OAUTH_FIREFOX_PREFS,
+            )
+            timeout_ms = camoufox_kwargs.pop("_default_timeout")
             manager = AsyncCamoufox(**camoufox_kwargs)
             browser = await manager.__aenter__()
             page = await browser.new_page()
-            page.set_default_timeout(15000)
-            await page.goto(auth_url, wait_until="domcontentloaded", timeout=20000)
+            page.set_default_timeout(timeout_ms)
+            await page.goto(auth_url, wait_until="domcontentloaded", timeout=45000)
 
             return {
                 "stub": False,
@@ -2588,6 +1857,56 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                 ErrorCode.network_connection_error,
                 "codebuddy auth/state connection error",
             ) from exc
+
+    async def _restart_browser_page(self, session: dict) -> Any:
+        """Restart browser page after a crash. Returns new page or raises."""
+        browser = session.get("browser")
+        auth_url = session.get("auth_url", "")
+        if not browser or not auth_url:
+            raise RetryableBatcherError(
+                ErrorCode.browser_unexpected_state,
+                "cannot restart browser — missing browser or auth_url",
+            )
+        try:
+            # Try to create a new page from existing browser
+            page = await browser.new_page()
+            page.set_default_timeout(30000)
+            await page.goto(auth_url, wait_until="domcontentloaded", timeout=45000)
+            session["page"] = page
+            _codebuddy_auth_debug("browser page restarted successfully (new page from existing browser)")
+            return page
+        except Exception:
+            pass
+
+        # Browser itself is dead — need full restart
+        _codebuddy_auth_debug("browser process dead — performing full restart")
+        manager = session.get("manager")
+        if manager:
+            try:
+                await manager.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+        from camoufox.async_api import AsyncCamoufox
+
+        camoufox_kwargs = build_camoufox_kwargs(
+            proxy_url=_get_proxy_url() or "",
+            default_timeout=15000,
+            disable_coop=True,
+            firefox_user_prefs=OAUTH_FIREFOX_PREFS,
+        )
+        timeout_ms = camoufox_kwargs.pop("_default_timeout")
+        new_manager = AsyncCamoufox(**camoufox_kwargs)
+        new_browser = await new_manager.__aenter__()
+        page = await new_browser.new_page()
+        page.set_default_timeout(timeout_ms)
+        await page.goto(auth_url, wait_until="domcontentloaded", timeout=25000)
+
+        session["manager"] = new_manager
+        session["browser"] = new_browser
+        session["page"] = page
+        _codebuddy_auth_debug("full browser restart completed")
+        return page
 
     async def authenticate(
         self, account: NormalizedAccount, session: Any
@@ -2617,7 +1936,42 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                 "codebuddy session missing auth state",
             )
 
+        # Internal retry for browser crashes — restart browser up to 2 times
+        # before escalating to the outer retry loop in login.py
+        _browser_crash_retries = 0
+        _max_browser_crash_retries = 2
+
+        while True:
+            try:
+                return await self._authenticate_inner(account, session, page, state)
+            except Exception as exc:
+                is_connection_closed = is_browser_crash(exc)
+                if is_connection_closed and _browser_crash_retries < _max_browser_crash_retries:
+                    _browser_crash_retries += 1
+                    _codebuddy_auth_debug(
+                        f"browser crash detected ({_browser_crash_retries}/{_max_browser_crash_retries}): {str(exc)[:100]}"
+                    )
+                    _emit_oauth_progress(
+                        f"Browser crashed — restarting ({_browser_crash_retries}/{_max_browser_crash_retries})"
+                    )
+                    await asyncio.sleep(2.0)
+                    try:
+                        page = await self._restart_browser_page(session)
+                    except Exception as restart_exc:
+                        _codebuddy_auth_debug(f"browser restart failed: {restart_exc}")
+                        raise RetryableBatcherError(
+                            ErrorCode.browser_unexpected_state,
+                            f"codebuddy browser crash + restart failed: {exc}",
+                        ) from exc
+                    continue
+                # Not a connection-closed error or retries exhausted — re-raise
+                raise
+
+    async def _authenticate_inner(
+        self, account: NormalizedAccount, session: Any, page: Any, state: str
+    ) -> dict[str, Any]:
         # CodeBuddy login uses an iframe landing (checkbox + Google button) before Google auth form.
+        _emit_oauth_progress("Initiating Google OAuth login")
         for _ in range(10):
             try:
                 current_url = page.url
@@ -2638,10 +1992,55 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
         email_step_started_at: float | None = None
         _codebuddy_base_netloc = urlparse(CODEBUDDY_BASE_URL).netloc
 
-        for _ in range(150):
+        # Inactivity timeout: only timeout if NO progress for 150s.
+        # As long as something is happening (URL changes, buttons clicked, pages loading),
+        # the timer resets. This handles slow internet gracefully.
+        _INACTIVITY_TIMEOUT = 150.0
+        _last_progress_at = time.monotonic()
+        _last_seen_url = ""
+
+        # Progress tracking — emit each step only once
+        _progress_emitted: set[str] = set()
+
+        # Track consent state — if consent was clicked and browser crashes after,
+        # we know OAuth is complete server-side and can return authenticated immediately.
+        _consent_was_clicked = False
+
+        _consecutive_page_errors = 0
+        for _ in range(600):  # High iteration cap — inactivity timeout is the real guard
+            _now_mono = time.monotonic()
+            if _now_mono - _last_progress_at > _INACTIVITY_TIMEOUT:
+                raise RetryableBatcherError(
+                    ErrorCode.auth_temporary_failure,
+                    "codebuddy authenticate stuck — no progress for 150s",
+                )
             try:
                 current_url = page.url
-            except Exception:
+                _consecutive_page_errors = 0
+                # Reset inactivity timer when URL changes (page navigated = progress)
+                if current_url and current_url != _last_seen_url:
+                    _last_progress_at = time.monotonic()
+                    _last_seen_url = current_url
+            except Exception as _page_exc:
+                _consecutive_page_errors += 1
+                # If page is consistently unreachable, browser likely crashed
+                if _consecutive_page_errors >= 3:
+                    # If consent was already clicked, OAuth is complete server-side.
+                    # Browser crash on the redirect is expected — return authenticated.
+                    if _consent_was_clicked:
+                        _codebuddy_auth_debug(
+                            "browser crashed after consent was clicked — "
+                            "treating as authenticated (OAuth complete server-side)"
+                        )
+                        _emit_oauth_progress(
+                            "OAuth complete — consent granted (browser crashed on redirect)"
+                        )
+                        return {"authenticated": True, "state": state}
+                    raise RetryableBatcherError(
+                        ErrorCode.browser_unexpected_state,
+                        f"codebuddy browser connection lost: {_page_exc}",
+                    )
+                await asyncio.sleep(1.0)
                 current_url = ""
             parsed_url = urlparse(current_url) if current_url else None
             current_host = parsed_url.netloc if parsed_url else ""
@@ -2683,14 +2082,26 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                         q.get("platform", [""])[0].upper() == CODEBUDDY_PLATFORM
                         and q.get("state", [""])[0] == state
                     ):
+                        _emit_oauth_progress("OAuth complete — redirect callback received")
                         return {"authenticated": True, "state": state}
 
                 if current_url.startswith(CODEBUDDY_REDIRECT_SCHEME):
+                    _emit_oauth_progress("OAuth complete — redirect callback received")
                     return {"authenticated": True, "state": state}
 
                 normalized_path = (current_path or "").strip().lower()
+                # /no-permission typically means areaInfoComplete=false (region not set).
+                # This is NOT a permanent suspension — region setup fixes it.
+                # We treat it as "authenticated" and let fetch_tokens handle region setup.
+                if normalized_path == "/no-permission":
+                    _codebuddy_auth_debug(
+                        "no-permission page detected — treating as authenticated "
+                        "(region setup will be done in fetch_tokens)"
+                    )
+                    _emit_oauth_progress("OAuth complete — account needs region setup")
+                    return {"authenticated": True, "state": state}
+
                 unauthorized_paths = {
-                    "/no-permission",
                     "/no-client-authorization",
                     "/no-client-authorize",
                 }
@@ -2713,6 +2124,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                         pass
 
             if is_verify_email_page:
+                _last_progress_at = time.monotonic()  # progress: email verification page
                 _codebuddy_auth_debug(f"email verification page detected at {current_url[:100]}")
                 verified = await _handle_codebuddy_email_verification(page)
                 if verified:
@@ -2735,7 +2147,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                         if auth_url:
                             _codebuddy_auth_debug(f"retrying auth from scratch: {auth_url[:80]}")
                             await asyncio.sleep(2.0)
-                            await page.goto(auth_url, wait_until="domcontentloaded", timeout=20000)
+                            await page.goto(auth_url, wait_until="domcontentloaded", timeout=45000)
                             landing_transition_deadline = time.monotonic() + 10.0
                             await asyncio.sleep(1.0)
                             continue
@@ -2745,23 +2157,45 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                         )
                 except RetryableBatcherError:
                     raise
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Page is likely broken/crashed — log and break early
+                    _codebuddy_auth_debug(f"keycloak error check failed (page broken?): {exc}")
+                    await asyncio.sleep(1.0)
+                    continue
 
             if await _handle_google_gaplustos(page):
+                _last_progress_at = time.monotonic()  # progress: clicked gaplustos
+                if "gaplustos" not in _progress_emitted:
+                    _emit_oauth_progress("Google security check — confirming identity")
+                    _progress_emitted.add("gaplustos")
                 await asyncio.sleep(0.8)
                 continue
 
             if await _handle_google_consent_continue(page):
-                await asyncio.sleep(0.8)
-                continue
+                _last_progress_at = time.monotonic()  # progress: clicked consent
+                _consent_was_clicked = True
+                if "consent" not in _progress_emitted:
+                    _emit_oauth_progress("Google consent — granting access")
+                    _progress_emitted.add("consent")
+                # After consent is clicked, the OAuth callback has already been sent
+                # to CodeBuddy's backend. The redirect to CodeBuddy often crashes
+                # Camoufox (COOP/cross-origin navigation). Don't wait for it —
+                # just return authenticated immediately.
+                await asyncio.sleep(2.0)
+                _emit_oauth_progress("OAuth complete — consent granted")
+                return {"authenticated": True, "state": state}
 
-            accounts_payload = await _fetch_console_accounts_via_page(page)
-            cookie_header = await _build_cookie_header_from_page(
-                page, CODEBUDDY_BASE_URL
-            )
-            if cookie_header and isinstance(session, dict):
-                session["cookie_header"] = cookie_header
+            # Only attempt accounts fetch when on CodeBuddy domain (not Google auth).
+            # This avoids wasted fetch calls on every loop iteration during OAuth.
+            accounts_payload = None
+            cookie_header = None
+            if current_host == _codebuddy_base_netloc:
+                accounts_payload = await _fetch_console_accounts_via_page(page)
+                cookie_header = await _build_cookie_header_from_page(
+                    page, CODEBUDDY_BASE_URL
+                )
+                if cookie_header and isinstance(session, dict):
+                    session["cookie_header"] = cookie_header
 
             if accounts_payload is None and cookie_header:
                 accounts_payload = await _fetch_console_accounts(
@@ -2781,15 +2215,10 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                     f"count={len(accounts)} path={current_path or '/'} "
                     f"areaInfoComplete={area_info_complete} raw={area_info_complete_raw!r}"
                 )
-                if cookie_header and isinstance(session, dict):
-                    session["cookie_header"] = cookie_header
 
-                if area_info_complete:
-                    await _save_cookies_to_file(page, account.identifier)
-                    return {"authenticated": True, "state": state}
-
-                    continue
-
+                # Account is authenticated regardless of areaInfoComplete status.
+                # Region selection is handled separately (or skipped entirely).
+                _emit_oauth_progress("OAuth complete — session verified")
                 await _save_cookies_to_file(page, account.identifier)
                 return {"authenticated": True, "state": state}
 
@@ -2798,6 +2227,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                 continue
 
             if on_codebuddy_region:
+                _last_progress_at = time.monotonic()  # progress: on region page
                 region_ok = await _ensure_region_with_retry(
                     page, account.identifier, max_retries=3
                 )
@@ -2817,11 +2247,13 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                 continue
 
             if on_codebuddy_login:
+                _last_progress_at = time.monotonic()  # progress: on login page
                 await _handle_codebuddy_landing(page)
 
             # When redirected back to CodeBuddy home after a Google timeout/re-auth,
             # need to click ToS checkbox + Google login button again to restart the flow.
             if on_codebuddy_home and now >= landing_transition_deadline:
+                _last_progress_at = time.monotonic()  # progress: retrying landing
                 _codebuddy_auth_debug(
                     f"codebuddy home detected (path={current_path!r}), re-triggering landing click"
                 )
@@ -2878,6 +2310,10 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                 at_account_picker = await _is_google_account_picker(google_target)
 
             if on_google_auth and at_account_picker:
+                _last_progress_at = time.monotonic()  # progress: account picker visible
+                if "picker" not in _progress_emitted:
+                    _emit_oauth_progress("Google OAuth — selecting account")
+                    _progress_emitted.add("picker")
                 _codebuddy_auth_debug(
                     f"google account picker detected, clicking account={account.identifier}"
                 )
@@ -2898,12 +2334,16 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
 
             email_filled = False
             if on_google_auth and at_email_step and not at_password_step:
+                _last_progress_at = time.monotonic()  # progress: email step visible
+                if "email" not in _progress_emitted:
+                    _emit_oauth_progress("Google OAuth — entering email")
+                    _progress_emitted.add("email")
                 if email_step_started_at is None:
                     email_step_started_at = now
-                elif now - email_step_started_at > 120.0:
+                elif now - email_step_started_at > 35.0:
                     raise RetryableBatcherError(
                         ErrorCode.browser_challenge_blocked,
-                        "codebuddy captcha suspected: email step stuck > 120s",
+                        "codebuddy captcha suspected: email step stuck > 35s",
                     )
                 if now < email_transition_deadline:
                     await asyncio.sleep(0.4)
@@ -2919,6 +2359,10 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
 
             password_filled = False
             if on_google_auth and at_password_step:
+                _last_progress_at = time.monotonic()  # progress: password step visible
+                if "password" not in _progress_emitted:
+                    _emit_oauth_progress("Google OAuth — entering password")
+                    _progress_emitted.add("password")
                 email_step_started_at = None
                 if now < password_transition_deadline:
                     await asyncio.sleep(0.4)
@@ -2975,34 +2419,79 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                 "codebuddy browser session missing",
             )
 
-        _codebuddy_auth_debug("ensuring region selection")
-        region_ok = await _ensure_region_with_retry(
-            page, account.identifier, max_retries=3
+        # Internal retry for browser crashes during token fetch
+        for _token_attempt in range(3):
+            try:
+                return await self._fetch_tokens_inner(page, session, state, account)
+            except Exception as exc:
+                is_connection_closed = is_browser_crash(exc)
+                if is_connection_closed and _token_attempt < 2:
+                    _codebuddy_auth_debug(
+                        f"browser crash in fetch_tokens (attempt {_token_attempt+1}/3): {str(exc)[:100]}"
+                    )
+                    _emit_oauth_progress(
+                        f"Browser crashed during token fetch — restarting ({_token_attempt+1}/2)"
+                    )
+                    await asyncio.sleep(2.0)
+                    try:
+                        page = await self._restart_browser_page(session)
+                    except Exception as restart_exc:
+                        _codebuddy_auth_debug(f"browser restart failed in fetch_tokens: {restart_exc}")
+                        raise RetryableBatcherError(
+                            ErrorCode.browser_unexpected_state,
+                            f"codebuddy browser crash in fetch_tokens + restart failed: {exc}",
+                        ) from exc
+                    continue
+                raise
+
+        # Should not reach here, but just in case
+        raise RetryableBatcherError(
+            ErrorCode.provider_token_exchange_failed,
+            "codebuddy fetch_tokens exhausted all browser crash retries",
         )
-        if not region_ok:
-            _codebuddy_auth_debug("region selection failed, trying force submit")
-            region_ok = await _submit_region_via_page(page)
-            if not region_ok:
-                raise RetryableBatcherError(
-                    ErrorCode.provider_token_exchange_failed,
-                    "codebuddy failed to set region after retries",
-                )
 
-        _codebuddy_auth_debug("fetching user enterprise ID")
-        accounts_payload = await _fetch_console_accounts_via_page(page)
+    async def _fetch_tokens_inner(
+        self, page: Any, session: Any, state: str, account: NormalizedAccount
+    ) -> dict[str, str]:
+        # ─── ENSURE PAGE IS ON CODEBUDDY DOMAIN ──────────────────────────
+        # After consent-click shortcut, the page may still be on Google domain.
+        # We need to navigate to CodeBuddy to establish session cookies before
+        # making API calls via page.evaluate(fetch(..., credentials:'include')).
+        _codebuddy_base_netloc = urlparse(CODEBUDDY_BASE_URL).netloc
+        try:
+            current_url = page.url
+        except Exception:
+            current_url = ""
+        current_host = urlparse(current_url).netloc if current_url else ""
 
-        user_enterprise_id = "personal-edition-user-id"
-        if accounts_payload is not None:
-            accounts_data = accounts_payload.get("data") or {}
-            accounts = accounts_data.get("accounts") or []
-            if accounts:
-                first_account = accounts[0]
-                user_enterprise_id = str(
-                    first_account.get("userEnterpriseId") or "personal-edition-user-id"
-                )
+        if current_host != _codebuddy_base_netloc:
+            _codebuddy_auth_debug(
+                f"page not on CodeBuddy domain (on {current_host}), navigating to complete OAuth"
+            )
+            # Navigate to the OAuth state endpoint — this completes the OAuth flow
+            # and establishes session cookies on the CodeBuddy domain.
+            _state_url = f"{CODEBUDDY_BASE_URL}/started?platform={CODEBUDDY_PLATFORM}&state={state}"
+            try:
+                await page.goto(_state_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as nav_exc:
+                _codebuddy_auth_debug(f"navigation to CodeBuddy failed: {nav_exc}, trying base URL")
+                try:
+                    await page.goto(CODEBUDDY_BASE_URL, wait_until="domcontentloaded", timeout=30000)
+                except Exception:
+                    pass
+            await asyncio.sleep(1.0)
 
-        _codebuddy_auth_debug("creating API key via browser")
-        api_key = await _create_api_key_via_page(page, user_enterprise_id)
+        # ─── ENSURE REGION + TRIAL ACTIVATION ────────────────────────────
+        # Region setup and trial activation are required to provision credits.
+        # Without this, accounts get "Restricted" status with 0 credits.
+        _codebuddy_auth_debug("ensuring region + trial activation before API key creation")
+        await self._ensure_region_and_trial(page)
+
+        # ─── DIRECT API KEY CREATION ─────────────────────────────────────
+        # Directly create API key via page.evaluate() → fetch().
+        # Works even on restricted/error pages — session cookies are enough.
+        _codebuddy_auth_debug("creating API key directly")
+        api_key = await _create_api_key_fast(page)
 
         if not api_key:
             raise RetryableBatcherError(
@@ -3011,9 +2500,72 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
             )
 
         await _save_cookies_to_file(page, account.identifier)
-        _codebuddy_auth_debug("cookies saved, browser can be closed now")
+        _codebuddy_auth_debug("done — cookies saved, browser can be closed")
 
         return {"api_key": api_key, "state": state}
+
+    async def _ensure_region_and_trial(self, page: Any) -> None:
+        """Ensure region is set to Singapore and trial is activated.
+
+        This is required for new accounts to receive credits.
+        Without region + trial, accounts are "Restricted" with 0 credits.
+        Steps:
+          1. Set region to Singapore via /console/login/account
+          2. Register overseas user via /auth/realms/copilot/overseas/user/register
+          3. Activate trial via /billing/ide/trial
+        All steps are idempotent — safe to call on already-configured accounts.
+        """
+        # Step 1: Submit region (Singapore)
+        _codebuddy_auth_debug("region+trial: submitting region (Singapore)")
+        region_body = {
+            "attributes": {
+                "countryCode": ["65"],
+                "countryFullName": ["Singapore"],
+                "countryName": ["SG"],
+            }
+        }
+        status, payload, body = await _codebuddy_request_via_page(
+            page, "POST", CODEBUDDY_CONSOLE_LOGIN_ACCOUNT_ENDPOINT, body=region_body
+        )
+        code = payload.get("code") if isinstance(payload, dict) else None
+        _codebuddy_auth_debug(f"region+trial: region status={status} code={code}")
+
+        # Step 2: Get user ID and register overseas
+        accounts_payload = await _fetch_console_accounts_via_page(page)
+        user_id = ""
+        if accounts_payload:
+            accounts_data = accounts_payload.get("data") or {}
+            accounts = accounts_data.get("accounts") or []
+            if accounts:
+                user_id = str(accounts[0].get("uid") or "")
+
+        if user_id:
+            register_url = (
+                f"{CODEBUDDY_BASE_URL}/auth/realms/copilot/overseas/user/register"
+                f"?userId={user_id}"
+            )
+            reg_status, reg_payload, _ = await _codebuddy_request_via_page(
+                page, "GET", register_url
+            )
+            _codebuddy_auth_debug(
+                f"region+trial: overseas register status={reg_status} "
+                f"payload={reg_payload}"
+            )
+        else:
+            _codebuddy_auth_debug("region+trial: no uid found, skipping overseas register")
+
+        # Step 3: Activate trial
+        trial_url = f"{CODEBUDDY_BASE_URL}/billing/ide/trial"
+        trial_status, trial_payload, _ = await _codebuddy_request_via_page(
+            page, "POST", trial_url
+        )
+        trial_code = trial_payload.get("code") if isinstance(trial_payload, dict) else None
+        _codebuddy_auth_debug(
+            f"region+trial: trial activation status={trial_status} code={trial_code}"
+        )
+
+        # Delay to let backend provision credits after trial activation
+        await asyncio.sleep(2.0)
 
     async def fetch_quota(
         self,
@@ -3021,84 +2573,70 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
         tokens: dict[str, str],
         session: Any,
     ) -> dict[str, Any] | None:
+        """Fetch quota via API calls only — no page navigation needed."""
         _ = account
 
         page = session.get("page") if isinstance(session, dict) else None
         if page is None:
             return None
 
-        try:
-            await page.goto(
-                f"{CODEBUDDY_BASE_URL}/profile",
-                wait_until="domcontentloaded",
-                timeout=15000,
-            )
-            await asyncio.sleep(1.0)
-        except Exception:
-            pass
+        # Retry with page restart on browser crash (up to 2 restarts)
+        for _quota_attempt in range(3):
+            try:
+                return await self._fetch_quota_inner(page, session)
+            except Exception as exc:
+                if is_browser_crash(exc) and _quota_attempt < 2:
+                    _codebuddy_auth_debug(
+                        f"browser crash in fetch_quota (attempt {_quota_attempt+1}/3): {str(exc)[:100]}"
+                    )
+                    await asyncio.sleep(1.5)
+                    try:
+                        page = await self._restart_browser_page(session)
+                    except Exception:
+                        _codebuddy_auth_debug("browser restart failed in fetch_quota")
+                        return None
+                    continue
+                # Non-crash errors — just return None (quota is best-effort)
+                _codebuddy_auth_debug(f"fetch_quota error: {str(exc)[:120]}")
+                return None
 
-        _codebuddy_auth_debug("VIP: checking gift claim via API")
+        _codebuddy_auth_debug("fetch_quota exhausted all crash retries")
+        return None
+
+    async def _fetch_quota_inner(
+        self, page: Any, session: Any
+    ) -> dict[str, Any] | None:
+        """Inner fetch_quota logic — may raise on browser crash."""
+        # 1. Claim gift credits via API (fast, no navigation)
+        _codebuddy_auth_debug("claiming gift credits via API")
         gift_claimed, gift_credits = await self._try_claim_gift_via_api(page)
 
-        _codebuddy_auth_debug("VIP: fetching credit via API (get-user-resource)")
-        for attempt in range(3):
+        # 2. Fetch credit balance via API (no page navigation needed)
+        # Retry up to 4 times — credits may take a moment to provision after trial activation
+        _codebuddy_auth_debug("fetching credit balance via API")
+        for attempt in range(4):
             if attempt > 0:
-                _codebuddy_auth_debug(f"credit API retry {attempt + 1}/3")
-                await asyncio.sleep(1.0 + attempt)
+                await asyncio.sleep(2.0)
 
             credit_summary = await _fetch_user_resource_credit_via_page(page)
             if credit_summary:
+                remain = credit_summary.get("credit_capacity_remain", 0)
+                # If remain is 0 but we just activated trial, wait and retry
+                if remain <= 0 and attempt < 3:
+                    _codebuddy_auth_debug(
+                        f"credit remain=0 on attempt {attempt+1}, retrying..."
+                    )
+                    continue
                 if gift_claimed:
                     credit_summary["gift_claimed"] = True
                     credit_summary["gift_credits"] = gift_credits
                 _codebuddy_auth_debug(
-                    f"credit API success: dosage={credit_summary.get('credit_total_dosage')} "
-                    f"remain={credit_summary.get('credit_capacity_remain')} "
+                    f"credit fetched: remain={credit_summary.get('credit_capacity_remain')} "
                     f"size={credit_summary.get('credit_capacity_size')}"
                 )
                 return credit_summary
 
-        _codebuddy_auth_debug(
-            "VIP: credit API failed, falling back to browser claim + scrape"
-        )
-        opened = await _open_codebuddy_usage_page(page)
-        if not opened:
-            return None
-
-        await asyncio.sleep(3.0)
-
-        claimed = False
-        for claim_attempt in range(3):
-            claimed = await _claim_bonus(page)
-            if claimed:
-                break
-            if claim_attempt < 2:
-                _codebuddy_auth_debug(
-                    f"claim attempt {claim_attempt + 1}/3 — button not ready, waiting..."
-                )
-                await asyncio.sleep(2.0)
-        if claimed:
-            _codebuddy_auth_debug("waiting for activity credits to appear")
-            await _wait_activity_credits(page, timeout=30.0)
-            await asyncio.sleep(2.0)
-
-        for page_attempt in range(3):
-            if page_attempt > 0:
-                try:
-                    await page.reload(wait_until="domcontentloaded")
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=12000)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(2.0 + page_attempt)
-                except Exception:
-                    pass
-
-            credit_summary = await _scrape_usage_credits_from_html(page)
-            if credit_summary:
-                return credit_summary
-
-        _codebuddy_auth_debug("VIP: credit fetch failed (API + browser)")
+        _codebuddy_auth_debug("credit API failed — returning None")
         return None
 
     async def _try_claim_gift_via_api(self, page: Any) -> tuple[bool, float]:

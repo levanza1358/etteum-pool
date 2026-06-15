@@ -200,6 +200,15 @@ export async function fetchRequests(page: number = 1, limit: number = 50, provid
   return fetchApi(`/api/stats/requests?${params.toString()}`);
 }
 
+/**
+ * Fetch full detail (including heavy requestBody / responseBody) for a single
+ * request log. Used by the Requests page detail drawer so the list endpoint
+ * can stay lightweight.
+ */
+export async function fetchRequestDetail(id: number) {
+  return fetchApi<{ data: unknown }>(`/api/stats/requests/${id}`);
+}
+
 export async function fetchModels() {
   return fetchApi("/v1/models");
 }
@@ -241,6 +250,98 @@ export async function applyIntegrationConfig(baseUrl: string): Promise<ApplyConf
   return fetchApi("/api/integration/apply-config", {
     method: "POST",
     body: JSON.stringify({ baseUrl }),
+  });
+}
+
+// ── Multi-Client Integration ─────────────────────────────────────
+
+export interface ClientMetaDTO {
+  id: string;
+  name: string;
+  description: string;
+  cli: string;
+  url: string;
+  detected: boolean;
+  configPaths: string[];
+}
+
+export interface IntegrationModelDTO {
+  id: string;
+  owned_by: string;
+  context_window?: number;
+  max_output?: number;
+  thinking?: boolean;
+  vision?: boolean;
+}
+
+export interface IntegrationClientsData {
+  clients: ClientMetaDTO[];
+  models: IntegrationModelDTO[];
+}
+
+export interface ClientConfigPreviewDTO {
+  client: string;
+  success: boolean;
+  preview?: Record<string, unknown>;
+  paths: string[];
+  backupPaths: string[];
+  error?: string;
+}
+
+export interface ApplyClientResult {
+  client: string;
+  success: boolean;
+  paths: string[];
+  backupPaths: string[];
+  error?: string;
+}
+
+export interface ApplyAllResult {
+  success: boolean;
+  results: ApplyClientResult[];
+}
+
+export async function fetchIntegrationClients(): Promise<IntegrationClientsData> {
+  return fetchApi("/api/integration/clients");
+}
+
+export async function fetchClientConfigPreview(
+  clientId: string,
+  baseUrl: string,
+  modelId?: string
+): Promise<ClientConfigPreviewDTO> {
+  return fetchApi(`/api/integration/clients/${clientId}/preview`, {
+    method: "POST",
+    body: JSON.stringify({ baseUrl, modelId }),
+  });
+}
+
+export async function applyClientConfig(
+  clientId: string,
+  baseUrl: string,
+  modelId?: string
+): Promise<ApplyClientResult> {
+  return fetchApi(`/api/integration/clients/${clientId}/apply`, {
+    method: "POST",
+    body: JSON.stringify({ baseUrl, modelId }),
+  });
+}
+
+export async function applyAllClients(
+  baseUrl: string,
+  modelId?: string
+): Promise<ApplyAllResult> {
+  return fetchApi("/api/integration/apply-all", {
+    method: "POST",
+    body: JSON.stringify({ baseUrl, modelId }),
+  });
+}
+
+export async function restoreClientConfig(
+  clientId: string
+): Promise<{ success: boolean; path?: string; restoredFrom?: string; error?: string }> {
+  return fetchApi(`/api/integration/clients/${clientId}/restore`, {
+    method: "POST",
   });
 }
 

@@ -39,6 +39,8 @@ export const requestLogs = sqliteTable("request_logs", {
   accountEmail: text("account_email"),
   accountQuotaBefore: real("account_quota_before").default(0),
   accountQuotaAfter: real("account_quota_after").default(0),
+  /** JSON-encoded CompressionStats (see src/proxy/compression/types.ts). null when compression is fully disabled. */
+  compressionStats: text("compression_stats", { mode: "json" }),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 }, (table) => [
   index("request_logs_created_at_idx").on(table.createdAt),
@@ -157,6 +159,7 @@ export const proxyPool = sqliteTable("proxy_pool", {
   lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
   lastCheckedAt: integer("last_checked_at", { mode: "timestamp" }),
   errorMessage: text("error_message"),
+  latencyMs: integer("latency_ms"),
   successCount: integer("success_count").default(0),
   failCount: integer("fail_count").default(0),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),

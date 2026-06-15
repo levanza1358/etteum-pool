@@ -96,7 +96,10 @@ class WarmupQueue {
       this.queue.push(item);
 
       if (account?.provider) {
-        this.progressByProvider[account.provider].total++;
+        if (!this.progressByProvider[account.provider]) {
+          this.progressByProvider[account.provider] = { total: 0, completed: 0 };
+        }
+        this.progressByProvider[account.provider]!.total++;
       }
 
       const log = addAuthLog({
@@ -229,9 +232,11 @@ class WarmupQueue {
         for (const provider of Object.keys(this.progressByProvider)) {
           broadcast({
             type: "warmup_complete",
-            data: { provider },
+            data: { provider, ...this.progressByProvider[provider] },
           });
         }
+        // Clear progress after completion so next fetch doesn't get stale data
+        this.progressByProvider = {};
       }
     }
   }
@@ -284,8 +289,9 @@ class WarmupQueue {
       item.status = success ? "completed" : "failed";
 
       // Track completion per provider
-      if (this.progressByProvider[account.provider]) {
-        this.progressByProvider[account.provider].completed++;
+      const provProgress = this.progressByProvider[account.provider];
+      if (provProgress) {
+        provProgress.completed++;
       }
     } catch (error) {
       if (item.retries < this.maxRetries) {
@@ -297,8 +303,9 @@ class WarmupQueue {
       }
 
       item.status = "failed";
-      if (this.progressByProvider[account.provider]) {
-        this.progressByProvider[account.provider].completed++;
+      const catchProgress = this.progressByProvider[account.provider];
+      if (catchProgress) {
+        catchProgress.completed++;
       }
 
       const message = error instanceof Error ? error.message : String(error);

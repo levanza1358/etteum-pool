@@ -14,6 +14,7 @@
 - **Automatic Load Balancing** — Round-robin or sequential distribution across healthy accounts
 - **Credit Tracking** — Real-time quota monitoring and exhaustion detection
 - **Auto-Warmup** — Periodic health checks to keep accounts ready
+- **Token Compression** — RTK / DCP / Caveman / Cache Markers / Image Dedupe pipeline ([docs](docs/compression.md))
 - **Dashboard** — Beautiful web UI for monitoring and management
 - **Account Filter** — Bulk check which accounts are missing per provider, with one-click add
 - **Multi-Select Actions** — Select multiple accounts for bulk retry, warmup, enable/disable, delete

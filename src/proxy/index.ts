@@ -150,7 +150,7 @@ function extractUsageFromSsePayload(payload: string) {
       promptTokens: Number(usage?.prompt_tokens || usage?.input_tokens || 0),
       completionTokens: Number(usage?.completion_tokens || usage?.output_tokens || 0),
       totalTokens: Number(usage?.total_tokens || 0),
-      creditsUsed: Number(usage?.credits_used || usage?.creditsUsed || parsed.credits_used || parsed.creditsUsed || 0),
+      creditsUsed: Number(usage?.credits_used || usage?.creditsUsed || usage?.credit || parsed.credits_used || parsed.creditsUsed || 0),
     };
   } catch {
     return null;
@@ -456,7 +456,7 @@ async function handleChatCompletion(body: ChatCompletionRequest) {
   // Claude Code's hardcoded haiku/sonnet/opus ids -> a model in the pool).
   body = { ...body, model: resolveModelAlias(normalizeModelId(body.model)) };
   const isStream = body.stream === true;
-  const { result, account, provider, durationMs } = await routeRequest(body, isStream);
+  const { result, account, provider, durationMs, compressionStats } = await routeRequest(body, isStream);
   let shouldReleaseTracking = true;
 
   try {
@@ -512,6 +512,7 @@ async function handleChatCompletion(body: ChatCompletionRequest) {
     responseBody: prepareLogBody(result.response),
     accountQuotaBefore: quotaBefore,
     accountQuotaAfter: quotaAfter,
+    compressionStats: compressionStats ?? null,
   };
 
     if (isStream && result.stream) {

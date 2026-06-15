@@ -93,6 +93,7 @@ proxyPoolRouter.post("/pool/:id/check", async (c) => {
     .set({
       status: result.ok ? "active" : "error",
       errorMessage: result.error || null,
+      latencyMs: result.latencyMs,
       lastCheckedAt: new Date(),
       updatedAt: new Date(),
     })
@@ -116,6 +117,7 @@ proxyPoolRouter.post("/pool/check-all", async (c) => {
         .set({
           status: result.ok ? "active" : "error",
           errorMessage: result.error || null,
+          latencyMs: result.latencyMs,
           lastCheckedAt: new Date(),
           updatedAt: new Date(),
         })

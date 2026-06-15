@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Search, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fetchRequests } from "@/lib/api";
+import { fetchRequests, fetchRequestDetail } from "@/lib/api";
 import { formatDateTimeID } from "@/lib/utils";
 import { useWsEvent } from "@/hooks/useWebSocket";
 
@@ -26,6 +26,25 @@ interface RequestLog {
   errorMessage: string | null;
   requestBody?: unknown;
   responseBody?: unknown;
+  compressionStats?: CompressionStats | null;
+}
+
+interface CompressionStats {
+  tokensBefore: number;
+  tokensAfter: number;
+  saved: number;
+  savedPct: number;
+  byTechnique?: {
+    tsc?: number;
+    rtk?: number;
+    dcp?: number;
+    caveman?: number;
+    imageDedupe?: number;
+    cacheMarkers?: number;
+  };
+  /** Per-shape-filter savings inside RTK (only present when RTK fired). */
+  rtkFilters?: Record<string, number>;
+  durationMs: number;
 }
 
 function getCreditMeta(req: RequestLog) {
@@ -49,8 +68,31 @@ export default function Requests() {
   const [provider, setProvider] = useState("all");
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<RequestLog | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [page, setPage] = useState(1);
   const perPage = 25;
+
+  /**
+   * Open the detail drawer for a row. The list endpoint omits the heavy
+   * requestBody / responseBody columns to keep the page snappy, so we lazily
+   * fetch the full record here. We immediately show what we already have so
+   * the drawer feels instant, then fill in the bodies once they arrive.
+   */
+  async function openDetail(req: RequestLog) {
+    setSelected(req);
+    if (req.requestBody !== undefined && req.responseBody !== undefined) return;
+    setDetailLoading(true);
+    try {
+      const res = (await fetchRequestDetail(req.id)) as { data: RequestLog };
+      if (res?.data) {
+        setSelected((current) => (current?.id === req.id ? { ...current, ...res.data } : current));
+      }
+    } catch {
+      // best-effort; leave bodies undefined and let the UI render empty blocks
+    } finally {
+      setDetailLoading(false);
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -134,7 +176,7 @@ export default function Requests() {
               </thead>
               <tbody>
                 {filtered.slice((page - 1) * perPage, page * perPage).map((req) => (
-                  <tr key={req.id} onClick={() => setSelected(req)} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--secondary)]/50 cursor-pointer">
+                  <tr key={req.id} onClick={() => openDetail(req)} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--secondary)]/50 cursor-pointer">
                     <td className="p-4 text-xs text-[var(--muted-foreground)] font-mono">{formatDateTimeID(req.createdAt)}</td>
                     <td className="p-4 text-sm text-[var(--foreground)]">{labelProvider(req.provider)}</td>
                     <td className="p-4 text-sm text-[var(--foreground)] hidden md:table-cell">{req.model || "-"}</td>
@@ -197,6 +239,13 @@ export default function Requests() {
               {typeof getCreditMeta(selected).creditRate === "number" && <> · Rate: <span className="text-[var(--foreground)]">{getCreditMeta(selected).creditRate}</span></>}
             </div>
 
+            {selected.compressionStats && (
+              <CompressionPanel
+                stats={selected.compressionStats}
+                promptTokens={selected.promptTokens}
+              />
+            )}
+
             <div className="mt-5 space-y-1">
               <p className="text-xs uppercase text-[var(--muted-foreground)]">Account</p>
               <p className="text-sm font-medium text-[var(--foreground)]">{selected.accountEmail || `#${selected.accountId}`}</p>
@@ -207,8 +256,16 @@ export default function Requests() {
               <div className="mt-5 rounded-md bg-[var(--error)]/10 p-3 text-sm text-[var(--error)]">{selected.errorMessage}</div>
             )}
 
-            <JsonBlock title="Request Body" value={selected.requestBody} />
-            <JsonBlock title="Response Body" value={selected.responseBody} />
+            {detailLoading && selected.requestBody === undefined ? (
+              <div className="mt-5 flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
+                <RefreshCw className="w-3 h-3 animate-spin" /> Loading request & response body…
+              </div>
+            ) : (
+              <>
+                <JsonBlock title="Request Body" value={selected.requestBody} />
+                <JsonBlock title="Response Body" value={selected.responseBody} />
+              </>
+            )}
           </aside>
         </div>
       )}
@@ -224,6 +281,139 @@ function Metric({ label, value, color }: { label: string; value: string | number
     yellow: "bg-[var(--warning)]/10 text-[var(--warning)]",
   };
   return <div className={`rounded-md p-3 ${colors[color]}`}><p className="text-[10px] uppercase opacity-80">{label}</p><p className="font-bold">{value}</p></div>;
+}
+
+const TECHNIQUE_LABELS: Record<keyof NonNullable<CompressionStats["byTechnique"]>, string> = {
+  tsc: "TSC (tool schema)",
+  rtk: "RTK (tool truncation)",
+  dcp: "DCP (dedup)",
+  caveman: "Caveman (system prompt)",
+  imageDedupe: "Image dedup",
+  cacheMarkers: "Cache markers",
+};
+
+function formatNum(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+const RTK_FILTER_LABELS: Record<string, string> = {
+  "git-diff": "git diff (hunks)",
+  "git-status": "git status",
+  tree: "tree (depth ≤ 1)",
+  "read-numbered": "Read (line-numbered)",
+  grep: "grep (per-file)",
+  "dedup-log": "dedup-log",
+  generic: "generic head + tail",
+};
+
+function CompressionPanel({
+  stats,
+  promptTokens,
+}: {
+  stats: CompressionStats;
+  promptTokens: number | null;
+}) {
+  const { tokensBefore, tokensAfter, saved, byTechnique = {}, rtkFilters, durationMs } = stats;
+  const techEntries = Object.entries(byTechnique).filter(([, v]) => typeof v === "number" && v > 0) as Array<
+    [keyof typeof TECHNIQUE_LABELS, number]
+  >;
+  const filterEntries: Array<[string, number]> = rtkFilters
+    ? Object.entries(rtkFilters).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])
+    : [];
+
+  // Best practice: anchor the displayed before/after to provider-reported
+  // prompt_tokens (ground truth) instead of our char/4 heuristic. Our internal
+  // estimate is only used to allocate per-technique attribution; for the
+  // headline numbers we trust the upstream usage.prompt_tokens.
+  //
+  // Formula:
+  //   actualBefore = promptTokens + saved   (what would have been billed without compression)
+  //   actualAfter  = promptTokens           (what was actually billed)
+  //   actualPct    = saved / actualBefore   (real savings ratio)
+  //
+  // If promptTokens is missing/0 (e.g. error response), fall back to our estimate.
+  const hasProviderTruth = typeof promptTokens === "number" && promptTokens > 0;
+  const displayAfter = hasProviderTruth ? promptTokens : tokensAfter;
+  const displayBefore = hasProviderTruth ? promptTokens + saved : tokensBefore;
+  const displayPct = displayBefore > 0 ? (saved / displayBefore) * 100 : 0;
+
+  // No real savings on this request — show a muted "ran but no-op" line.
+  if (saved <= 0) {
+    return (
+      <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--secondary)]/40 p-3 text-xs text-[var(--muted-foreground)]">
+        <span className="uppercase tracking-wide">Compression</span>
+        <span className="ml-2">Pipeline ran in {durationMs}ms — no compressible content this turn.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-md border border-[var(--success)]/30 bg-[var(--success)]/5 p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-[10px] uppercase tracking-wide text-[var(--success)]">Compression</p>
+        <p className="text-[10px] text-[var(--muted-foreground)]">Pipeline {durationMs}ms</p>
+      </div>
+
+      <div className="mt-2 flex items-baseline gap-2">
+        <span className="text-xl font-bold text-[var(--success)]">−{formatNum(saved)}</span>
+        <span className="text-xs text-[var(--muted-foreground)]">tokens saved</span>
+        <span className="ml-auto text-sm font-semibold text-[var(--success)]">{displayPct.toFixed(2)}%</span>
+      </div>
+
+      <div
+        className="mt-1 text-[11px] text-[var(--muted-foreground)]"
+        title={
+          hasProviderTruth
+            ? `Anchored to provider-reported prompt_tokens (${formatNum(promptTokens!)}). Internal estimate was ${formatNum(tokensBefore)} → ${formatNum(tokensAfter)}.`
+            : "Internal char/4 estimate (provider usage not available)"
+        }
+      >
+        {formatNum(displayBefore)} <span className="opacity-50">→</span> {formatNum(displayAfter)} tokens
+        {hasProviderTruth && <span className="ml-1 opacity-50">· actual</span>}
+      </div>
+
+      {techEntries.length > 0 && (
+        <div className="mt-3 space-y-1 border-t border-[var(--border)] pt-2">
+          <p className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">By technique</p>
+          {techEntries.map(([key, value]) => {
+            const pct = saved > 0 ? (value / saved) * 100 : 0;
+            return (
+              <div key={key} className="flex items-center gap-2 text-xs">
+                <span className="flex-1 text-[var(--foreground)]">{TECHNIQUE_LABELS[key]}</span>
+                <div className="h-1 w-16 overflow-hidden rounded-full bg-[var(--border)]">
+                  <div className="h-full bg-[var(--success)]" style={{ width: `${Math.min(100, pct)}%` }} />
+                </div>
+                <span className="w-16 text-right text-[var(--muted-foreground)]">−{formatNum(value)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {filterEntries.length > 0 && (
+        <details className="mt-2 group">
+          <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+            RTK filters ({filterEntries.length}) <span className="opacity-50 group-open:hidden">▸</span><span className="opacity-50 hidden group-open:inline">▾</span>
+          </summary>
+          <div className="mt-1 space-y-1">
+            {filterEntries.map(([name, value]) => {
+              const rtkTotal = byTechnique.rtk ?? 0;
+              const pct = rtkTotal > 0 ? (value / rtkTotal) * 100 : 0;
+              return (
+                <div key={name} className="flex items-center gap-2 text-[11px]">
+                  <span className="flex-1 pl-2 text-[var(--muted-foreground)]">{RTK_FILTER_LABELS[name] ?? name}</span>
+                  <div className="h-1 w-16 overflow-hidden rounded-full bg-[var(--border)]">
+                    <div className="h-full bg-[var(--success)]/60" style={{ width: `${Math.min(100, pct)}%` }} />
+                  </div>
+                  <span className="w-16 text-right text-[var(--muted-foreground)]">−{formatNum(value)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      )}
+    </div>
+  );
 }
 
 function JsonBlock({ title, value }: { title: string; value: unknown }) {
