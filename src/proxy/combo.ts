@@ -109,6 +109,47 @@ export function isComboEnabled(): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Virtual models — combo rules exposed as selectable models in /v1/models
+// ---------------------------------------------------------------------------
+
+import type { ModelInfo } from "./providers/base";
+
+/**
+ * Return combo rules as virtual ModelInfo entries so they appear in /v1/models.
+ * The model id is the triggerModel (e.g. "best", "fall").
+ * Only enabled rules are included when the master toggle is on.
+ */
+export function getComboVirtualModels(): ModelInfo[] {
+  if (!masterEnabled) return [];
+
+  return cache
+    .filter((r) => r.enabled && r.steps.length > 0)
+    .map((rule) => ({
+      id: rule.triggerModel,
+      object: "model" as const,
+      created: Math.floor(rule.createdAt.getTime() / 1000),
+      owned_by: "combo",
+      context_window: 200000,
+      max_output: 64000,
+      thinking: true,
+      vision: true,
+    }));
+}
+
+/**
+ * Check if a model id is a combo virtual model (exact match on triggerModel).
+ */
+export function isComboModel(model: string): ComboRule | null {
+  if (!masterEnabled) return null;
+  const lower = model.toLowerCase();
+  for (const rule of cache) {
+    if (!rule.enabled || rule.steps.length === 0) continue;
+    if (rule.triggerModel.toLowerCase() === lower) return rule;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Matching
 // ---------------------------------------------------------------------------
 

@@ -579,9 +579,14 @@ proxyRouter.get("/v1/models", async (c) => {
   // Without this, the sync getModels() returns stale/empty supportedModels.
   await refreshByokModels();
   const models = getAllModels();
+
+  // Append combo virtual models so they appear as selectable models
+  const { getComboVirtualModels } = await import("./combo");
+  const comboModels = getComboVirtualModels();
+
   return c.json({
     object: "list",
-    data: models,
+    data: [...models, ...comboModels],
   });
 });
 

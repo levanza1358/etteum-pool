@@ -12,6 +12,7 @@ import {
 import {
   findComboForModel,
   shouldComboRetry,
+  isComboModel,
 } from "./combo";
 
 export interface RouteResult {
@@ -272,6 +273,16 @@ export async function routeRequest(
   const sanitizedRequest = sanitizeRequest(request);
 
   const originalModel = sanitizedRequest.model;
+
+  // ── Check if this is a combo virtual model (exact match) ──
+  // When the client selects a combo model (e.g. "best"), we skip the normal
+  // provider lookup and go straight into the combo chain from step 1.
+  const directCombo = isComboModel(originalModel);
+  if (directCombo) {
+    return runComboChain(sanitizedRequest, originalModel, directCombo, stream, []);
+  }
+
+  // ── Normal routing: find provider for this model ──
   const providerName = pool.getProviderForModel(originalModel);
   if (!providerName) {
     throw new Error(`No provider found for model: ${originalModel}`);
@@ -288,7 +299,7 @@ export async function routeRequest(
       throw primaryError;
     }
 
-    // ── Combo fallback ──
+    // ── Combo fallback (pattern match) ──
     const comboRule = findComboForModel(originalModel);
     if (!comboRule || comboRule.steps.length === 0) {
       throw primaryError; // No combo rule — propagate original error
@@ -359,12 +370,88 @@ export async function routeRequest(
       }
     }
 
-    // All combo steps exhausted
+    // All combo steps exhausted (pattern-match fallback)
     throw new Error(
       `Combo "${comboRule.name}" exhausted all ${attemptedSteps.length} steps. ` +
       `Tried: ${attemptedSteps.join(" → ")}. Last error: ${lastComboError}`
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// runComboChain — used when the model IS a combo virtual model
+// ---------------------------------------------------------------------------
+
+import type { ComboRule } from "./combo";
+
+async function runComboChain(
+  sanitizedRequest: ChatCompletionRequest,
+  originalModel: string,
+  comboRule: ComboRule,
+  stream: boolean,
+  priorSteps: string[],
+): Promise<RouteResult> {
+  const maxSteps = comboRule.maxRetries > 0
+    ? Math.min(comboRule.maxRetries, comboRule.steps.length)
+    : comboRule.steps.length;
+
+  const attemptedSteps: string[] = [...priorSteps];
+  let lastComboError = "";
+
+  console.log(
+    `[Combo] Direct combo model "${originalModel}" → running chain "${comboRule.name}" (${maxSteps} steps)…`
+  );
+
+  for (let i = 0; i < maxSteps; i++) {
+    const step = comboRule.steps[i]!;
+    const stepProvider = step.provider as ProviderName;
+
+    if (!providers[stepProvider]) {
+      console.warn(`[Combo] Unknown provider "${step.provider}" in step ${i}, skipping.`);
+      continue;
+    }
+
+    attemptedSteps.push(`${step.provider}/${step.model}`);
+    console.log(`[Combo] Step ${i + 1}/${maxSteps}: trying ${step.provider}/${step.model}…`);
+
+    try {
+      const result = await tryProvider(sanitizedRequest, step.model, stepProvider, stream);
+
+      result.comboInfo = {
+        ruleName: comboRule.name,
+        originalModel,
+        usedStep: i,
+        usedProvider: step.provider,
+        usedModel: step.model,
+        attemptedSteps,
+      };
+
+      console.log(
+        `[Combo] ✓ Success on step ${i + 1} (${step.provider}/${step.model}) ` +
+        `after ${attemptedSteps.length} attempts.`
+      );
+
+      return result;
+    } catch (stepError) {
+      lastComboError = stepError instanceof Error ? stepError.message : String(stepError);
+      console.log(`[Combo] Step ${i + 1} failed: ${lastComboError}`);
+
+      // Check retry conditions (skip for first step — always try at least step 1)
+      if (i > 0 && !shouldComboRetry(comboRule, lastComboError)) {
+        console.log(`[Combo] Error type not retryable, stopping.`);
+        break;
+      }
+
+      if (isNonAccountRequestError(lastComboError)) {
+        continue; // Model/content error — skip to next step
+      }
+    }
+  }
+
+  throw new Error(
+    `Combo "${comboRule.name}" exhausted all ${attemptedSteps.length} steps. ` +
+    `Tried: ${attemptedSteps.join(" → ")}. Last error: ${lastComboError}`
+  );
 }
 
 // Re-exported from the provider registry (single source of truth). Kept as
