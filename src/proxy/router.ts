@@ -186,6 +186,22 @@ async function tryProvider(
       }
 
       if (result.quotaExhausted) {
+        // Recheck quota in real-time before marking exhausted — avoids false positives
+        // from transient 429s or stale local quota data.
+        try {
+          const quotaCheck = await provider.fetchQuota(account);
+          if (quotaCheck.success && quotaCheck.quota && quotaCheck.quota.remaining > 0) {
+            // Quota still available — this was a transient rate limit, not real exhaustion
+            console.log(
+              `[Router] ${account.email}: quotaExhausted signal but real quota is ${quotaCheck.quota.remaining}/${quotaCheck.quota.limit}. Treating as transient.`
+            );
+            await pool.markTransientFailure(account.id, result.error || "Transient rate limit (quota still available)");
+            lastError = result.error || "Transient rate limit";
+            continue;
+          }
+        } catch {
+          // Quota check failed — proceed with marking exhausted
+        }
         await pool.markExhausted(account.id);
         lastError = result.error || "Quota exhausted";
         continue;
