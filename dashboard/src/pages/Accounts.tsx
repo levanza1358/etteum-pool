@@ -27,6 +27,7 @@ import {
   fetchByokProviders,
   fetchSettings,
   fetchWarmupQueue,
+  fetchAccountsSummary,
   getCodexAuthorize,
   importAccounts,
   loginAccounts,
@@ -115,14 +116,25 @@ export default function Accounts() {
     loadingRef.current = true;
     setLoading(true);
     try {
-      const [accountsRes, queueRes, warmupQueueRes, autoWarmupRes, settingsRes] = await Promise.all([
-        fetchAccounts() as Promise<{ data: Account[] }>,
+      const [summaryRes, queueRes, warmupQueueRes, autoWarmupRes, settingsRes] = await Promise.all([
+        fetchAccountsSummary().catch(() => ({ summary: [] })),
         fetchAuthQueue().catch(() => null),
         fetchWarmupQueue().catch(() => null),
         fetchAutoWarmupStatus().catch(() => null),
         fetchSettings().catch(() => null) as Promise<{ data: Record<string, string> } | null>,
       ]);
-      setAccounts(accountsRes.data || []);
+      // Convert summary rows into pseudo-Account objects for the overview cards
+      const pseudoAccounts: Account[] = (summaryRes.summary || []).flatMap((row) =>
+        Array.from({ length: row.count }, (_, i) => ({
+          id: -(i + 1),
+          email: "",
+          provider: row.provider as Provider,
+          status: row.status,
+          quotaLimit: row.totalQuotaLimit / Math.max(1, row.count),
+          quotaRemaining: row.totalQuotaRemaining / Math.max(1, row.count),
+        }))
+      );
+      setAccounts(pseudoAccounts);
       setQueue(queueRes);
       setWarmupQueue(warmupQueueRes);
       setAutoWarmup(autoWarmupRes);

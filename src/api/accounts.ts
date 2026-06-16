@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { db } from "../db/index";
 import { accounts, requestLogs, vccCards, vccTransactions } from "../db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { encrypt, decrypt } from "../utils/crypto";
 import { broadcast } from "../ws/index";
 import type { NewAccount } from "../db/schema";
@@ -21,10 +21,53 @@ accountsRouter.get("/warmup-queue", (c) => {
 });
 
 /**
- * GET /api/accounts - List all accounts
+ * GET /api/accounts - List accounts with optional server-side filtering.
+ * Query params:
+ *   provider - filter by provider (e.g. "kiro", "codebuddy")
+ *   status   - filter by status (e.g. "active", "exhausted", "error")
+ *   limit    - max rows (default: all; use for pagination)
+ *   offset   - skip rows (default: 0)
+ *   summary  - if "true", return only counts per provider (fast overview)
  */
 accountsRouter.get("/", async (c) => {
-  const allAccounts = await db.select().from(accounts);
+  const providerFilter = c.req.query("provider");
+  const statusFilter = c.req.query("status");
+  const limitParam = c.req.query("limit");
+  const offsetParam = c.req.query("offset");
+  const summaryMode = c.req.query("summary") === "true";
+
+  // Fast summary mode: return counts per provider without loading all rows
+  if (summaryMode) {
+    const rows = await db
+      .select({
+        provider: accounts.provider,
+        status: accounts.status,
+        count: sql<number>`COUNT(*)`,
+        totalQuotaRemaining: sql<number>`COALESCE(SUM(${accounts.quotaRemaining}), 0)`,
+        totalQuotaLimit: sql<number>`COALESCE(SUM(${accounts.quotaLimit}), 0)`,
+      })
+      .from(accounts)
+      .groupBy(accounts.provider, accounts.status);
+    return c.json({ summary: rows });
+  }
+
+  // Build WHERE conditions
+  const conditions = [];
+  if (providerFilter) conditions.push(eq(accounts.provider, providerFilter));
+  if (statusFilter) conditions.push(eq(accounts.status, statusFilter));
+
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+  // Query with optional limit/offset
+  let query = db.select().from(accounts);
+  if (where) query = query.where(where) as any;
+
+  const limit = limitParam ? Math.min(Math.max(1, Number(limitParam) || 500), 2000) : undefined;
+  const offset = offsetParam ? Math.max(0, Number(offsetParam) || 0) : 0;
+
+  if (limit) query = (query as any).limit(limit).offset(offset);
+
+  const allAccounts = await query;
 
   // Don't expose passwords in response
   const sanitized = allAccounts.map((acc) => ({

@@ -121,8 +121,17 @@ export async function fetchDashboardStats(hours?: number | null, range?: string)
   return fetchApi(`/api/stats${qs ? `?${qs}` : ""}`);
 }
 
-export async function fetchAccounts() {
-  return fetchApi("/api/accounts");
+export async function fetchAccounts(options?: { provider?: string; limit?: number; offset?: number }) {
+  const params = new URLSearchParams();
+  if (options?.provider) params.set("provider", options.provider);
+  if (options?.limit) params.set("limit", String(options.limit));
+  if (options?.offset) params.set("offset", String(options.offset));
+  const qs = params.toString();
+  return fetchApi(`/api/accounts${qs ? `?${qs}` : ""}`);
+}
+
+export async function fetchAccountsSummary() {
+  return fetchApi<{ summary: Array<{ provider: string; status: string; count: number; totalQuotaRemaining: number; totalQuotaLimit: number }> }>("/api/accounts?summary=true");
 }
 
 export async function fetchProviders() {

@@ -254,8 +254,8 @@ export default function AccountList() {
   async function load() {
     setLoading(true);
     try {
-      const res = await fetchAccounts() as { data: Account[] };
-      setAccounts((res.data || []).filter((a) => a.provider === provider));
+      const res = await fetchAccounts({ provider: provider || undefined }) as { data: Account[] };
+      setAccounts(res.data || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
