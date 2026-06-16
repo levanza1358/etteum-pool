@@ -407,7 +407,7 @@ export default function Combo() {
                 <Input
                   value={form.triggerModel}
                   onChange={(e) => setForm({ ...form, triggerModel: e.target.value })}
-                  placeholder="e.g. opus, claude-sonnet, cb-opus"
+                  placeholder="e.g. opus, kr-claude-sonnet, cb-opus"
                 />
                 <p className="text-xs text-[var(--muted-foreground)] mt-1">Pattern used to match other models that should also trigger this combo</p>
               </div>
@@ -686,7 +686,7 @@ export default function Combo() {
             Combo automatically tries another provider + model when a request fails.
             For example, if <code className="bg-[var(--accent)] px-1 rounded">cb-opus-4.6</code> on CodeBuddy
             runs out of quota, combo can fallback to{" "}
-            <code className="bg-[var(--accent)] px-1 rounded">claude-sonnet-4.5</code> on Kiro.
+            <code className="bg-[var(--accent)] px-1 rounded">kr-claude-sonnet-4.5</code> on Kiro.
           </p>
           <p>
             <strong>Trigger Model:</strong> Pattern matched against the model requested by the client.

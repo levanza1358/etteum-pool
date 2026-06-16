@@ -214,7 +214,7 @@ curl https://pool.miraya.my.id/api/health
 curl https://pool.miraya.my.id/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude-sonnet-4.6","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"kr-claude-sonnet-4.6","messages":[{"role":"user","content":"Hello"}]}'
 
 # Buka dashboard di browser
 # https://pool.miraya.my.id

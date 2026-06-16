@@ -6,7 +6,7 @@
  *
  *   Request: claude-opus-4 (any provider)
  *     → CodeBuddy cb-opus-4.6 (quota exhausted)
- *       → Kiro claude-sonnet-4.5 (error)
+ *       → Kiro kr-claude-sonnet-4.5 (error)
  *         → Canva canva-sonnet-4 (success ✅)
  *
  * Rules are stored in the `combo_rules` SQLite table and cached in memory.
@@ -23,7 +23,7 @@ import { eq } from "drizzle-orm";
 
 export interface ComboStep {
   provider: string;  // e.g. "codebuddy", "kiro", "canva"
-  model: string;     // e.g. "cb-opus-4.6", "claude-sonnet-4.5"
+  model: string;     // e.g. "cb-opus-4.6", "kr-claude-sonnet-4.5"
 }
 
 export interface ComboRule {
@@ -326,6 +326,22 @@ export async function deleteComboRule(id: number): Promise<boolean> {
 // Row → object helper
 // ---------------------------------------------------------------------------
 
+function normalizeComboStep(step: ComboStep): ComboStep {
+  const model = String(step.model || "");
+  if (step.provider === "kiro" && model && !model.startsWith("kr-")) {
+    return { ...step, model: `kr-${model}` };
+  }
+  if (step.provider === "kiro-pro") {
+    if (model.startsWith("krp-")) return step;
+    if (model.startsWith("kp-opus-")) return { ...step, model: `krp-claude-${model.slice(3)}` };
+    if (model.startsWith("kp-sonnet-")) return { ...step, model: `krp-claude-${model.slice(3)}` };
+    if (model.startsWith("kp-haiku-")) return { ...step, model: `krp-claude-${model.slice(3)}` };
+    if (model === "kp-auto") return { ...step, model: "krp-auto" };
+    if (model && !model.startsWith("krp-")) return { ...step, model: `krp-${model}` };
+  }
+  return step;
+}
+
 function rowToComboRule(row: any): ComboRule {
   return {
     id: row.id,
@@ -333,7 +349,7 @@ function rowToComboRule(row: any): ComboRule {
     modelId: row.model_id || "",
     triggerModel: row.trigger_model,
     matchType: row.match_type || "contains",
-    steps: safeJsonParse(row.steps, []),
+    steps: safeJsonParse<ComboStep[]>(row.steps, []).map(normalizeComboStep),
     maxRetries: row.max_retries ?? 3,
     retryOn: safeJsonParse(row.retry_on, ["quota_exhausted", "rate_limit", "error", "timeout"]),
     enabled: Boolean(row.enabled),
