@@ -10,6 +10,7 @@ import { useTimedMessage } from "@/hooks/useTimedMessage";
 import { useWsEvent } from "@/hooks/useWebSocket";
 import {
   deleteAccount,
+  deleteAllAccountsByProvider,
   fetchAccounts,
   loginAccount,
   loginAccounts,
@@ -300,6 +301,20 @@ export default function AccountList() {
     try { await deleteAccount(id); showSuccess(`Deleted #${id}`); await load(); } catch (err) { showError(err); }
   }
 
+  async function handleDeleteAllProvider() {
+    if (!provider || accounts.length === 0) return;
+    const label = labelProvider(provider);
+    if (!confirm(`Delete ALL ${accounts.length} ${label} accounts? This cannot be undone.`)) return;
+    try {
+      const res = await deleteAllAccountsByProvider(provider);
+      setSelectedIds(new Set());
+      showSuccess(`Deleted ${res.deleted} ${label} accounts.`);
+      await load();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
   async function handleToggle(id: number, currentEnabled: boolean) {
     const next = !currentEnabled;
     setAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, enabled: next } : a)));
@@ -496,6 +511,9 @@ export default function AccountList() {
           </Button>
           <Button variant="outline" size="sm" onClick={() => handleToggleAll(false)} disabled={enabledCount === 0}>
             <XCircle className="w-4 h-4 mr-2 text-[var(--error)]" /> Disable All ({enabledCount})
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleDeleteAllProvider} disabled={accounts.length === 0}>
+            <Trash2 className="w-4 h-4 mr-2 text-[var(--error)]" /> Delete All ({accounts.length})
           </Button>
         </div>
       </div>

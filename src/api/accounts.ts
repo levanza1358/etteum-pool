@@ -820,6 +820,43 @@ accountsRouter.post("/toggle-all", async (c) => {
 });
 
 /**
+ * DELETE /api/accounts/provider/:provider - Delete all accounts for a provider
+ */
+accountsRouter.delete("/provider/:provider", async (c) => {
+  const provider = c.req.param("provider") as ProviderName;
+
+  if (!provider) {
+    return c.json({ error: "provider is required" }, 400);
+  }
+
+  const providerAccounts = await db
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(eq(accounts.provider, provider));
+
+  const ids = providerAccounts.map((account) => account.id);
+  if (ids.length === 0) {
+    return c.json({ provider, deleted: 0, success: true });
+  }
+
+  for (const id of ids) {
+    await db.update(requestLogs).set({ accountId: null }).where(eq(requestLogs.accountId, id));
+    await db.update(vccCards).set({ usedByAccountId: null }).where(eq(vccCards.usedByAccountId, id));
+    await db.delete(vccTransactions).where(eq(vccTransactions.accountId, id));
+  }
+
+  const deleted = await db
+    .delete(accounts)
+    .where(eq(accounts.provider, provider))
+    .returning({ id: accounts.id });
+
+  pool.invalidate(provider);
+  broadcast({ type: "accounts_updated", data: { provider, deleted: deleted.length } });
+
+  return c.json({ provider, deleted: deleted.length, success: true });
+});
+
+/**
  * DELETE /api/accounts/:id - Delete account
  */
 accountsRouter.delete("/:id", async (c) => {
