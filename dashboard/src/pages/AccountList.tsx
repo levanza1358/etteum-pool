@@ -32,6 +32,12 @@ interface CodexQuotaWindow {
 
 interface CodexQuotaMetadata {
   plan_type?: string;
+  subscription?: {
+    status?: string;
+    expires_at?: string | null;
+    renews_at?: string | null;
+    source_keys?: string[];
+  };
   primary?: CodexQuotaWindow;
   secondary?: CodexQuotaWindow;
   rate_limited?: boolean;
@@ -164,10 +170,17 @@ function CodexQuotaCell({ codex, fallbackRemaining, fallbackLimit }: { codex?: C
 
   return (
     <div className="space-y-2 min-w-[200px]">
-      {codex?.plan_type && (
+      {(codex?.plan_type || codex?.subscription?.status) && (
         <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">
-          Plan: {codex.plan_type}
+          {codex.plan_type && <span>Plan: <span className="text-[var(--foreground)]">{codex.plan_type}</span></span>}
+          {codex.subscription?.status && <span className="ml-2">Status: <span className="text-[var(--foreground)]">{codex.subscription.status}</span></span>}
           {codex.rate_limited && <span className="ml-2 text-[var(--error)]">RATE LIMITED</span>}
+        </div>
+      )}
+      {(codex?.subscription?.expires_at || codex?.subscription?.renews_at) && (
+        <div className="text-[10px] text-[var(--muted-foreground)] space-y-0.5">
+          {codex.subscription?.expires_at && <div>Expires: <span className="text-[var(--foreground)]">{formatDate(codex.subscription.expires_at)}</span></div>}
+          {codex.subscription?.renews_at && <div>Renews: <span className="text-[var(--foreground)]">{formatDate(codex.subscription.renews_at)}</span></div>}
         </div>
       )}
       {renderBar(primaryLabel, codex?.primary)}
