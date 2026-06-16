@@ -7,6 +7,7 @@ import {
   deleteComboRule,
   isComboEnabled,
   invalidateComboCache,
+  getStepCooldowns,
   type NewComboRule,
 } from "../proxy/combo";
 import { db } from "../db/index";
@@ -25,6 +26,7 @@ comboRouter.get("/", async (c) => {
   return c.json({
     data: rules,
     enabled: isComboEnabled(),
+    cooldowns: getStepCooldowns(),
   });
 });
 

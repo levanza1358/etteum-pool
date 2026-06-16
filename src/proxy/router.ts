@@ -13,6 +13,9 @@ import {
   findComboForModel,
   shouldComboRetry,
   isComboModel,
+  isStepCooledDown,
+  recordStepFailure,
+  recordStepSuccess,
 } from "./combo";
 
 export interface RouteResult {
@@ -338,11 +341,30 @@ export async function routeRequest(
         continue;
       }
 
+      // Cooldown check
+      if (isStepCooledDown(step.provider, step.model)) {
+        console.log(`[Combo] Step ${i + 1} (${step.provider}/${step.model}) is in cooldown, skipping.`);
+        continue;
+      }
+
+      // Health-aware skip
+      const hasAccounts = await pool.hasActiveAccounts(stepProvider);
+      if (!hasAccounts) {
+        console.log(`[Combo] Step ${i + 1} (${step.provider}/${step.model}) has no active accounts, skipping.`);
+        continue;
+      }
+
       attemptedSteps.push(`${step.provider}/${step.model}`);
       console.log(`[Combo] Step ${i + 1}/${maxSteps}: trying ${step.provider}/${step.model}…`);
 
       try {
-        const result = await tryProvider(sanitizedRequest, step.model, stepProvider, stream);
+        const result = await withTimeout(
+          tryProvider(sanitizedRequest, step.model, stepProvider, stream),
+          COMBO_STEP_TIMEOUT_MS,
+          `${step.provider}/${step.model}`,
+        );
+
+        recordStepSuccess(step.provider, step.model);
 
         // Success — attach combo metadata
         result.comboInfo = {
@@ -364,6 +386,8 @@ export async function routeRequest(
         lastComboError = stepError instanceof Error ? stepError.message : String(stepError);
         console.log(`[Combo] Step ${i + 1} failed: ${lastComboError}`);
 
+        recordStepFailure(step.provider, step.model);
+
         if (isNonAccountRequestError(lastComboError)) {
           continue; // Model/content error on this step — skip to next
         }
@@ -383,6 +407,20 @@ export async function routeRequest(
 // ---------------------------------------------------------------------------
 
 import type { ComboRule } from "./combo";
+
+/** Per-step timeout for combo chain (30 seconds per step). */
+const COMBO_STEP_TIMEOUT_MS = 30_000;
+
+/** Wrap a promise with a timeout. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms: ${label}`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
 
 async function runComboChain(
   sanitizedRequest: ChatCompletionRequest,
@@ -411,11 +449,32 @@ async function runComboChain(
       continue;
     }
 
+    // ── Cooldown check: skip steps that failed too many times recently ──
+    if (isStepCooledDown(step.provider, step.model)) {
+      console.log(`[Combo] Step ${i + 1} (${step.provider}/${step.model}) is in cooldown, skipping.`);
+      continue;
+    }
+
+    // ── Health-aware skip: check if provider has any active accounts ──
+    const hasAccounts = await pool.hasActiveAccounts(stepProvider);
+    if (!hasAccounts) {
+      console.log(`[Combo] Step ${i + 1} (${step.provider}/${step.model}) has no active accounts, skipping.`);
+      continue;
+    }
+
     attemptedSteps.push(`${step.provider}/${step.model}`);
     console.log(`[Combo] Step ${i + 1}/${maxSteps}: trying ${step.provider}/${step.model}…`);
 
     try {
-      const result = await tryProvider(sanitizedRequest, step.model, stepProvider, stream);
+      // ── Per-step timeout: don't let one slow provider block the whole chain ──
+      const result = await withTimeout(
+        tryProvider(sanitizedRequest, step.model, stepProvider, stream),
+        COMBO_STEP_TIMEOUT_MS,
+        `${step.provider}/${step.model}`,
+      );
+
+      // Success — reset cooldown and attach combo metadata
+      recordStepSuccess(step.provider, step.model);
 
       result.comboInfo = {
         ruleName: comboRule.name,
@@ -435,6 +494,9 @@ async function runComboChain(
     } catch (stepError) {
       lastComboError = stepError instanceof Error ? stepError.message : String(stepError);
       console.log(`[Combo] Step ${i + 1} failed: ${lastComboError}`);
+
+      // Record failure for cooldown tracking
+      recordStepFailure(step.provider, step.model);
 
       // Check retry conditions (skip for first step — always try at least step 1)
       if (i > 0 && !shouldComboRetry(comboRule, lastComboError)) {

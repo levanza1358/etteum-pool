@@ -234,6 +234,68 @@ export function shouldComboRetry(
 }
 
 // ---------------------------------------------------------------------------
+// Step cooldown — temporarily disable steps that fail repeatedly
+// ---------------------------------------------------------------------------
+
+const COOLDOWN_THRESHOLD = 5;       // consecutive failures before cooldown
+const COOLDOWN_DURATION_MS = 10 * 60 * 1000; // 10 minutes
+
+interface StepCooldownEntry {
+  failures: number;
+  cooledUntil: number; // timestamp ms
+}
+
+const stepCooldowns = new Map<string, StepCooldownEntry>();
+
+function stepKey(provider: string, model: string): string {
+  return `${provider}/${model}`;
+}
+
+/** Record a failure for a combo step. Returns true if the step is now in cooldown. */
+export function recordStepFailure(provider: string, model: string): boolean {
+  const key = stepKey(provider, model);
+  const entry = stepCooldowns.get(key) || { failures: 0, cooledUntil: 0 };
+  entry.failures++;
+  if (entry.failures >= COOLDOWN_THRESHOLD) {
+    entry.cooledUntil = Date.now() + COOLDOWN_DURATION_MS;
+    console.log(`[Combo] Step ${key} cooled down for 10m after ${entry.failures} consecutive failures.`);
+  }
+  stepCooldowns.set(key, entry);
+  return entry.cooledUntil > Date.now();
+}
+
+/** Record a success for a combo step — resets its failure counter. */
+export function recordStepSuccess(provider: string, model: string): void {
+  stepCooldowns.delete(stepKey(provider, model));
+}
+
+/** Check if a combo step is currently in cooldown. */
+export function isStepCooledDown(provider: string, model: string): boolean {
+  const entry = stepCooldowns.get(stepKey(provider, model));
+  if (!entry) return false;
+  if (entry.cooledUntil <= Date.now()) {
+    // Cooldown expired — reset
+    stepCooldowns.delete(stepKey(provider, model));
+    return false;
+  }
+  return true;
+}
+
+/** Get cooldown status for all steps (for dashboard). */
+export function getStepCooldowns(): Array<{ step: string; failures: number; cooledUntil: string | null }> {
+  const now = Date.now();
+  const result: Array<{ step: string; failures: number; cooledUntil: string | null }> = [];
+  for (const [key, entry] of stepCooldowns) {
+    result.push({
+      step: key,
+      failures: entry.failures,
+      cooledUntil: entry.cooledUntil > now ? new Date(entry.cooledUntil).toISOString() : null,
+    });
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // CRUD helpers (called from API routes)
 // ---------------------------------------------------------------------------
 
