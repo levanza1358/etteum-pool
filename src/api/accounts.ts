@@ -177,11 +177,15 @@ accountsRouter.get("/byok", async (c) => {
     const tokens = typeof acc.tokens === "string"
       ? JSON.parse(acc.tokens)
       : acc.tokens;
+    // Decrypt API key for display (local tool)
+    let apiKey = ""; try { apiKey = decrypt(acc.password); } catch { /* ignore */ }
+
 
     return {
       id: acc.id,
       label: acc.email,
       base_url: tokens?.base_url || "",
+      api_key: apiKey,
       format: tokens?.format || "auto",
       models: tokens?.models || [],
       model_prefix: tokens?.model_prefix || acc.email,

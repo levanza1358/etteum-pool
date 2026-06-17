@@ -763,6 +763,7 @@ export interface ByokProvider {
   id: number;
   label: string;
   base_url: string;
+  api_key?: string;
   format: "openai" | "anthropic" | "auto";
   models: string[];
   model_prefix: string;

@@ -666,9 +666,9 @@ export default function Accounts() {
         models,
       };
 
-      // Only include api_key if user entered a new one (not the masked placeholder)
-      if (byokForm.api_key && byokForm.api_key.trim() && byokForm.api_key !== BYOK_KEY_PLACEHOLDER) {
-        updateData.api_key = byokForm.api_key;
+      // Include api_key if user has a value (send current key to keep or update)
+      if (byokForm.api_key && byokForm.api_key.trim()) {
+        updateData.api_key = byokForm.api_key.trim();
       }
 
       await updateByokProvider(byokEditId, updateData);
@@ -689,7 +689,7 @@ export default function Accounts() {
     setByokForm({
       label: provider.label,
       base_url: provider.base_url,
-      api_key: BYOK_KEY_PLACEHOLDER, // Show masked indicator that key exists
+      api_key: provider.api_key || "", // Show actual key from backend
       format: provider.format,
       models: provider.models.join(", "),
     });
@@ -1176,14 +1176,10 @@ export default function Accounts() {
                 <textarea
                   value={byokForm.api_key}
                   onChange={(e) => setByokForm({ ...byokForm, api_key: e.target.value })}
-                  onFocus={() => {
-                    if (byokEditId && byokForm.api_key === BYOK_KEY_PLACEHOLDER) {
-                      setByokForm({ ...byokForm, api_key: "" });
-                    }
-                  }}
                   placeholder={byokEditId ? 'Enter new key to replace, or leave blank' : 'Paste one or more API keys (one per line)\nsk-...\nsk-...\nsk-...'}
                   rows={byokEditId ? 2 : 4}
                   className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm font-mono focus:ring-1 focus:ring-[var(--ring)] resize-y"
+                  spellCheck={false}
                 />
                 {!byokEditId && byokForm.api_key.split(/[\n\r]+/).filter(Boolean).length > 1 && (
                   <p className="text-xs text-[var(--success)]">
