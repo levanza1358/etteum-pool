@@ -790,6 +790,20 @@ export async function createByokProvider(data: {
   });
 }
 
+export async function createByokBatch(data: {
+  label: string;
+  base_url: string;
+  api_keys: string;
+  format?: "openai" | "anthropic" | "auto";
+  models: string[];
+  headers?: Record<string, string>;
+}): Promise<{ success: boolean; created: number; errors: number; accounts: Array<{ id: number; label: string }>; errorDetails: Array<{ index: number; error: string }>; models: string[] }> {
+  return fetchApi("/api/accounts/byok/batch", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
 export async function updateByokProvider(
   id: number,
   data: {

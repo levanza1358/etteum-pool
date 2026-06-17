@@ -18,6 +18,7 @@ import { useWsEvent } from "@/hooks/useWebSocket";
 import {
   completeCodexOAuthCallbackUrl,
   createAccount,
+  createByokBatch,
   createByokProvider,
   deleteByokProvider,
   fetchAccounts,
@@ -610,15 +611,32 @@ export default function Accounts() {
       return;
     }
 
+    // Detect batch mode: multiple keys separated by newlines
+    const keys = byokForm.api_key.split(/[\n\r]+/).map(k => k.trim()).filter(Boolean);
+    const isBatch = keys.length > 1;
+
     try {
-      await createByokProvider({
-        label: byokForm.label,
-        base_url: byokForm.base_url,
-        api_key: byokForm.api_key,
-        format: byokForm.format,
-        models,
-      });
-      showSuccess(`BYOK provider "${byokForm.label}" created successfully`);
+      if (isBatch) {
+        const res = await createByokBatch({
+          label: byokForm.label,
+          base_url: byokForm.base_url,
+          api_keys: byokForm.api_key,
+          format: byokForm.format,
+          models,
+        });
+        const msg = `Created ${res.created} BYOK accounts for "${byokForm.label}"` +
+          (res.errors > 0 ? ` (${res.errors} errors)` : "");
+        showSuccess(msg);
+      } else {
+        await createByokProvider({
+          label: byokForm.label,
+          base_url: byokForm.base_url,
+          api_key: byokForm.api_key.trim(),
+          format: byokForm.format,
+          models,
+        });
+        showSuccess(`BYOK provider "${byokForm.label}" created successfully`);
+      }
       setByokForm({ label: "", base_url: "", api_key: "", format: "auto", models: "" });
       setByokEditId(null);
       setByokDialogOpen(false);
@@ -1150,13 +1168,12 @@ export default function Accounts() {
 
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-[var(--foreground)] flex items-center gap-2">
-                  API Key
+                  API Key{!byokEditId && " (batch: one per line)"}
                   {byokEditId && (
                     <span className="inline-flex items-center gap-1 text-xs text-[var(--success)] font-normal bg-[var(--success)]/10 px-1.5 py-0.5 rounded-full">✓ Saved</span>
                   )}
                 </label>
-                <Input
-                  type="password"
+                <textarea
                   value={byokForm.api_key}
                   onChange={(e) => setByokForm({ ...byokForm, api_key: e.target.value })}
                   onFocus={() => {
@@ -1164,9 +1181,15 @@ export default function Accounts() {
                       setByokForm({ ...byokForm, api_key: "" });
                     }
                   }}
-                  placeholder={byokEditId ? 'Enter new key to replace, or leave blank' : 'sk-...'}
-                  className="focus:ring-1 focus:ring-[var(--ring)]"
+                  placeholder={byokEditId ? 'Enter new key to replace, or leave blank' : 'Paste one or more API keys (one per line)\nsk-...\nsk-...\nsk-...'}
+                  rows={byokEditId ? 2 : 4}
+                  className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm font-mono focus:ring-1 focus:ring-[var(--ring)] resize-y"
                 />
+                {!byokEditId && byokForm.api_key.split(/[\n\r]+/).filter(Boolean).length > 1 && (
+                  <p className="text-xs text-[var(--success)]">
+                    Batch mode: {byokForm.api_key.split(/[\n\r]+/).filter(Boolean).length} keys detected — each will become a separate account
+                  </p>
+                )}
                 {byokEditId && (
                   <p className="text-xs text-[var(--muted-foreground)]">Leave blank to keep existing API key</p>
                 )}

@@ -10,8 +10,12 @@ import { warmupQueue } from "../auth/warmup-queue";
 import { warmupAccount } from "../auth/warmup-runner";
 import { pool, type ProviderName } from "../proxy/pool";
 import { activateQoderPat } from "../proxy/providers/qoder";
+import { byokBatchRouter } from "./byok-batch";
 
 export const accountsRouter = new Hono();
+
+// Mount batch BYOK sub-router (must be before /:id routes)
+accountsRouter.route("/byok/batch", byokBatchRouter);
 
 /**
  * GET /api/accounts/warmup-queue - Get warmup progress per provider
