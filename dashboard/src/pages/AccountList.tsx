@@ -197,6 +197,21 @@ function CodexQuotaCell({ codex, fallbackRemaining, fallbackLimit }: { codex?: C
 function CreditBar({ remaining, limit, showLabel = true }: { remaining?: number | null; limit?: number | null; showLabel?: boolean }) {
   const rem = Number(remaining ?? 0);
   const lim = Number(limit ?? 0);
+
+  // BYOK/unlimited accounts: show "Unlimited" or "Unknown" instead of -1/-1
+  if (lim < 0 || (lim === 0 && rem < 0)) {
+    return (
+      <div className="space-y-1 min-w-[120px]">
+        <div className="text-[10px] text-[var(--muted-foreground)]">
+          {rem < 0 ? "Unlimited" : "Unknown"}
+        </div>
+        <div className="h-1.5 w-full rounded-full bg-[var(--primary)]/30 overflow-hidden">
+          <div className="h-full rounded-full bg-[var(--primary)]" style={{ width: "100%" }} />
+        </div>
+      </div>
+    );
+  }
+
   const pct = lim > 0 ? Math.max(0, Math.min(100, (rem / lim) * 100)) : 0;
   const tone = pct <= 10 ? "bg-[var(--error)]" : pct <= 40 ? "bg-[var(--warning)]" : "bg-[var(--primary)]";
 

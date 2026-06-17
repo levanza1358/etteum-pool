@@ -287,15 +287,72 @@ export class ByokProvider extends BaseProvider {
     return !!(tokens?.base_url && tokens?.models?.length);
   }
 
-  async fetchQuota(): Promise<{
+  async fetchQuota(account: Account): Promise<{
     success: boolean;
     quota?: { limit: number; remaining: number; used: number; resetAt?: Date | string | null };
     error?: string;
   }> {
-    return {
-      success: true,
-      quota: { limit: -1, remaining: -1, used: 0, resetAt: null },
-    };
+    const tokens = this.parseTokens(account.tokens);
+    if (!tokens?.base_url) return { success: false, error: "No base_url configured" };
+
+    const apiKey = this.getApiKey(account);
+    if (!apiKey) return { success: false, error: "No API key" };
+
+    const model = tokens.models?.[0];
+    if (!model) return { success: true, quota: { limit: -1, remaining: -1, used: 0 } };
+
+    // Send a minimal request to check if the key is valid and extract rate limit headers
+    try {
+      const url = `${tokens.base_url.replace(/\/$/, "")}/chat/completions`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+          ...tokens.headers,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: "hi" }],
+          max_tokens: 1,
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      // Extract rate limit info from response headers (many providers send these)
+      const limitRequests = Number(response.headers.get("x-ratelimit-limit-requests") || 0);
+      const remainingRequests = Number(response.headers.get("x-ratelimit-remaining-requests") || 0);
+      const limitTokens = Number(response.headers.get("x-ratelimit-limit-tokens") || 0);
+      const remainingTokens = Number(response.headers.get("x-ratelimit-remaining-tokens") || 0);
+      const resetAt = response.headers.get("x-ratelimit-reset-requests") || response.headers.get("x-ratelimit-reset") || null;
+
+      if (response.status === 401 || response.status === 403) {
+        return { success: false, error: `API key invalid or expired (HTTP ${response.status})` };
+      }
+      if (response.status === 429) {
+        return {
+          success: true,
+          quota: {
+            limit: limitRequests || limitTokens || 0,
+            remaining: 0,
+            used: limitRequests || limitTokens || 0,
+            resetAt,
+          },
+        };
+      }
+
+      // Key is valid — return whatever rate limit info we got
+      const limit = limitRequests || limitTokens || -1;
+      const remaining = remainingRequests || remainingTokens || -1;
+      const used = limit > 0 && remaining >= 0 ? limit - remaining : 0;
+
+      return {
+        success: true,
+        quota: { limit, remaining, used, resetAt },
+      };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   // ── OpenAI-compatible ──────────────────────────────────────────────
