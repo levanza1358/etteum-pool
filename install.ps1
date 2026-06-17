@@ -137,7 +137,7 @@ function Ensure-Python {
   foreach ($cand in @("python3.12","python3.11","python3.10","python","python3")) {
     if (Have $cand) {
       try {
-        $ver = & $cand -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null
+        $ver = & $cand -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" 2>$null
         if ($ver) {
           $parts = $ver.Trim().Split('.')
           if ([int]$parts[0] -ge 3 -and [int]$parts[1] -ge 10) {
@@ -276,7 +276,7 @@ function Install-NodeDeps {
   try {
     bun install
     if ($LASTEXITCODE -ne 0) {
-      Fail "bun install failed in dashboard/. Try running manually: cd dashboard && bun install"
+      Fail "bun install failed in dashboard/. Try running manually: cd dashboard; bun install"
     }
   } finally {
     Pop-Location
@@ -318,7 +318,7 @@ function Setup-PythonVenv {
   }
   Ok "Python deps installed"
 
-  Step "Installing browsers (Playwright + Camoufox — this can take a few minutes)"
+  Step "Installing browsers (Playwright + Camoufox - this can take a few minutes)"
   Info "Installing Playwright Chromium..."
   try {
     & $venvPy -m playwright install chromium 2>&1 | Select-Object -Last 3

@@ -17,6 +17,7 @@ import {
   recordStepFailure,
   recordStepSuccess,
 } from "./combo";
+import { tryAutoRecoverProvider, isAutoRecoverProvider } from "../auth/warmup-runner";
 
 export interface RouteResult {
   result: ProviderResult;
@@ -144,9 +145,19 @@ async function tryProvider(
   let lastError = "";
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const account = providerName === "byok"
+    let account = providerName === "byok"
       ? (await pool.getAccountForModel(compressedRequest.model))?.account ?? null
       : await pool.getNextAccount(providerName);
+
+    // Auto-recover: kalau pool kosong dan provider mendukung (mis. codex),
+    // coba "warmup" akun exhausted/error sebentar lalu coba sekali lagi.
+    if (!account && providerName !== "byok" && isAutoRecoverProvider(providerName) && attempt === 0) {
+      const recovered = await tryAutoRecoverProvider(providerName);
+      if (recovered > 0) {
+        account = await pool.getNextAccount(providerName);
+      }
+    }
+
     if (!account) {
       throw new Error(
         `No active accounts available for provider: ${providerName}`
@@ -195,9 +206,18 @@ async function tryProvider(
             console.log(
               `[Router] ${account.email}: quotaExhausted signal but real quota is ${quotaCheck.quota.remaining}/${quotaCheck.quota.limit}. Treating as transient.`
             );
-            await pool.markTransientFailure(account.id, result.error || "Transient rate limit (quota still available)");
+            await pool.updateQuotaSnapshot(account.id, quotaCheck.quota, {
+              status: "active",
+              errorMessage: null,
+            });
             lastError = result.error || "Transient rate limit";
             continue;
+          }
+          if (quotaCheck.success && quotaCheck.quota) {
+            await pool.updateQuotaSnapshot(account.id, quotaCheck.quota, {
+              status: "exhausted",
+              errorMessage: result.error || "Quota exhausted",
+            });
           }
         } catch {
           // Quota check failed — proceed with marking exhausted
@@ -324,60 +344,78 @@ export async function routeRequest(
       throw primaryError; // No combo rule — propagate original error
     }
 
-    const maxSteps = comboRule.maxRetries > 0
-      ? Math.min(comboRule.maxRetries, comboRule.steps.length)
+    // maxRetries = max number of fallback steps to ACTUALLY attempt.
+    // Skipped steps (duplicate of primary, cooldown, no accounts, unknown provider)
+    // do NOT consume this budget — they're not real attempts.
+    // 0 = no limit (try all steps in the chain).
+    const maxFallbacks = comboRule.maxRetries > 0
+      ? comboRule.maxRetries
       : comboRule.steps.length;
 
     const attemptedSteps: string[] = [`${providerName}/${originalModel}`];
+    const skippedSteps: string[] = [];
 
     console.log(
       `[Combo] Primary provider ${providerName}/${originalModel} failed: ${primaryMsg}. ` +
-      `Trying combo "${comboRule.name}" (${maxSteps} steps)…`
+      `Trying combo "${comboRule.name}" (${comboRule.steps.length} steps total, max ${maxFallbacks} fallback attempts)…`
     );
 
     let lastComboError = primaryMsg;
+    let triedFallbacks = 0;
 
-    for (let i = 0; i < maxSteps; i++) {
+    for (let i = 0; i < comboRule.steps.length; i++) {
+      if (triedFallbacks >= maxFallbacks) {
+        console.log(`[Combo] Reached maxRetries cap (${maxFallbacks}); stopping.`);
+        break;
+      }
+
       const step = comboRule.steps[i]!;
+      const stepLabel = `${step.provider}/${step.model}`;
 
-      // Skip if this step is the same as what we already tried
+      // Skip if this step is the same as what we already tried (don't consume budget)
       if (step.provider === providerName && step.model === originalModel) {
+        skippedSteps.push(`${stepLabel} (duplicate of primary)`);
+        continue;
+      }
+
+      const stepProvider = step.provider as ProviderName;
+      if (!providers[stepProvider]) {
+        console.warn(`[Combo] Unknown provider "${step.provider}" in step ${i + 1}, skipping.`);
+        skippedSteps.push(`${stepLabel} (unknown provider)`);
+        continue;
+      }
+
+      // Cooldown check (don't consume budget)
+      if (isStepCooledDown(step.provider, step.model)) {
+        console.log(`[Combo] Step ${i + 1} (${stepLabel}) is in cooldown, skipping.`);
+        skippedSteps.push(`${stepLabel} (cooldown)`);
+        continue;
+      }
+
+      // Health-aware skip (don't consume budget)
+      const hasAccounts = await pool.hasActiveAccounts(stepProvider, step.model);
+      if (!hasAccounts) {
+        console.log(`[Combo] Step ${i + 1} (${stepLabel}) has no active accounts, skipping.`);
+        skippedSteps.push(`${stepLabel} (no active accounts)`);
         continue;
       }
 
       // Check if the error type should trigger a retry for this rule
+      // (only check on actual attempts, after we've passed all skip conditions)
       if (!shouldComboRetry(comboRule, lastComboError)) {
         console.log(`[Combo] Error type not retryable for rule "${comboRule.name}", stopping.`);
         break;
       }
 
-      const stepProvider = step.provider as ProviderName;
-      if (!providers[stepProvider]) {
-        console.warn(`[Combo] Unknown provider "${step.provider}" in step ${i}, skipping.`);
-        continue;
-      }
-
-      // Cooldown check
-      if (isStepCooledDown(step.provider, step.model)) {
-        console.log(`[Combo] Step ${i + 1} (${step.provider}/${step.model}) is in cooldown, skipping.`);
-        continue;
-      }
-
-      // Health-aware skip
-      const hasAccounts = await pool.hasActiveAccounts(stepProvider);
-      if (!hasAccounts) {
-        console.log(`[Combo] Step ${i + 1} (${step.provider}/${step.model}) has no active accounts, skipping.`);
-        continue;
-      }
-
-      attemptedSteps.push(`${step.provider}/${step.model}`);
-      console.log(`[Combo] Step ${i + 1}/${maxSteps}: trying ${step.provider}/${step.model}…`);
+      attemptedSteps.push(stepLabel);
+      triedFallbacks++;
+      console.log(`[Combo] Fallback ${triedFallbacks}/${maxFallbacks} (step ${i + 1}/${comboRule.steps.length}): trying ${stepLabel}…`);
 
       try {
         const result = await withTimeout(
           tryProvider(sanitizedRequest, step.model, stepProvider, stream),
           COMBO_STEP_TIMEOUT_MS,
-          `${step.provider}/${step.model}`,
+          stepLabel,
         );
 
         recordStepSuccess(step.provider, step.model);
@@ -393,7 +431,7 @@ export async function routeRequest(
         };
 
         console.log(
-          `[Combo] ✓ Success on step ${i + 1} (${step.provider}/${step.model}) ` +
+          `[Combo] ✓ Success on step ${i + 1} (${stepLabel}) ` +
           `after ${attemptedSteps.length} attempts.`
         );
 
@@ -411,9 +449,13 @@ export async function routeRequest(
     }
 
     // All combo steps exhausted (pattern-match fallback)
+    const skippedNote = skippedSteps.length > 0
+      ? ` Skipped: ${skippedSteps.join(", ")}.`
+      : "";
     throw new Error(
-      `Combo "${comboRule.name}" exhausted all ${attemptedSteps.length} steps. ` +
-      `Tried: ${attemptedSteps.join(" → ")}. Last error: ${lastComboError}`
+      `Combo "${comboRule.name}" exhausted ${triedFallbacks} fallback attempt(s) ` +
+      `(out of ${comboRule.steps.length} steps in chain). ` +
+      `Tried: ${attemptedSteps.join(" → ")}.${skippedNote} Last error: ${lastComboError}`
     );
   }
 }
@@ -445,48 +487,64 @@ async function runComboChain(
   stream: boolean,
   priorSteps: string[],
 ): Promise<RouteResult> {
-  const maxSteps = comboRule.maxRetries > 0
-    ? Math.min(comboRule.maxRetries, comboRule.steps.length)
+  // maxRetries = max number of steps to ACTUALLY attempt.
+  // Skipped steps (cooldown, no accounts, unknown provider) do NOT consume budget.
+  // 0 = no limit.
+  const maxAttempts = comboRule.maxRetries > 0
+    ? comboRule.maxRetries
     : comboRule.steps.length;
 
   const attemptedSteps: string[] = [...priorSteps];
+  const skippedSteps: string[] = [];
   let lastComboError = "";
+  let triedCount = 0;
 
   console.log(
-    `[Combo] Direct combo model "${originalModel}" → running chain "${comboRule.name}" (${maxSteps} steps)…`
+    `[Combo] Direct combo model "${originalModel}" → running chain "${comboRule.name}" ` +
+    `(${comboRule.steps.length} steps total, max ${maxAttempts} attempts)…`
   );
 
-  for (let i = 0; i < maxSteps; i++) {
+  for (let i = 0; i < comboRule.steps.length; i++) {
+    if (triedCount >= maxAttempts) {
+      console.log(`[Combo] Reached maxRetries cap (${maxAttempts}); stopping.`);
+      break;
+    }
+
     const step = comboRule.steps[i]!;
     const stepProvider = step.provider as ProviderName;
+    const stepLabel = `${step.provider}/${step.model}`;
 
     if (!providers[stepProvider]) {
-      console.warn(`[Combo] Unknown provider "${step.provider}" in step ${i}, skipping.`);
+      console.warn(`[Combo] Unknown provider "${step.provider}" in step ${i + 1}, skipping.`);
+      skippedSteps.push(`${stepLabel} (unknown provider)`);
       continue;
     }
 
-    // ── Cooldown check: skip steps that failed too many times recently ──
+    // ── Cooldown check: skip steps that failed too many times recently (no budget) ──
     if (isStepCooledDown(step.provider, step.model)) {
-      console.log(`[Combo] Step ${i + 1} (${step.provider}/${step.model}) is in cooldown, skipping.`);
+      console.log(`[Combo] Step ${i + 1} (${stepLabel}) is in cooldown, skipping.`);
+      skippedSteps.push(`${stepLabel} (cooldown)`);
       continue;
     }
 
-    // ── Health-aware skip: check if provider has any active accounts ──
-    const hasAccounts = await pool.hasActiveAccounts(stepProvider);
+    // ── Health-aware skip: check if provider has any active accounts (no budget) ──
+    const hasAccounts = await pool.hasActiveAccounts(stepProvider, step.model);
     if (!hasAccounts) {
-      console.log(`[Combo] Step ${i + 1} (${step.provider}/${step.model}) has no active accounts, skipping.`);
+      console.log(`[Combo] Step ${i + 1} (${stepLabel}) has no active accounts, skipping.`);
+      skippedSteps.push(`${stepLabel} (no active accounts)`);
       continue;
     }
 
-    attemptedSteps.push(`${step.provider}/${step.model}`);
-    console.log(`[Combo] Step ${i + 1}/${maxSteps}: trying ${step.provider}/${step.model}…`);
+    attemptedSteps.push(stepLabel);
+    triedCount++;
+    console.log(`[Combo] Attempt ${triedCount}/${maxAttempts} (step ${i + 1}/${comboRule.steps.length}): trying ${stepLabel}…`);
 
     try {
       // ── Per-step timeout: don't let one slow provider block the whole chain ──
       const result = await withTimeout(
         tryProvider(sanitizedRequest, step.model, stepProvider, stream),
         COMBO_STEP_TIMEOUT_MS,
-        `${step.provider}/${step.model}`,
+        stepLabel,
       );
 
       // Success — reset cooldown and attach combo metadata
@@ -502,7 +560,7 @@ async function runComboChain(
       };
 
       console.log(
-        `[Combo] ✓ Success on step ${i + 1} (${step.provider}/${step.model}) ` +
+        `[Combo] ✓ Success on step ${i + 1} (${stepLabel}) ` +
         `after ${attemptedSteps.length} attempts.`
       );
 
@@ -514,8 +572,8 @@ async function runComboChain(
       // Record failure for cooldown tracking
       recordStepFailure(step.provider, step.model);
 
-      // Check retry conditions (skip for first step — always try at least step 1)
-      if (i > 0 && !shouldComboRetry(comboRule, lastComboError)) {
+      // Check retry conditions (skip for first real attempt — always try at least once)
+      if (triedCount > 1 && !shouldComboRetry(comboRule, lastComboError)) {
         console.log(`[Combo] Error type not retryable, stopping.`);
         break;
       }
@@ -526,9 +584,13 @@ async function runComboChain(
     }
   }
 
+  const skippedNote = skippedSteps.length > 0
+    ? ` Skipped: ${skippedSteps.join(", ")}.`
+    : "";
   throw new Error(
-    `Combo "${comboRule.name}" exhausted all ${attemptedSteps.length} steps. ` +
-    `Tried: ${attemptedSteps.join(" → ")}. Last error: ${lastComboError}`
+    `Combo "${comboRule.name}" exhausted ${triedCount} attempt(s) ` +
+    `(out of ${comboRule.steps.length} steps in chain). ` +
+    `Tried: ${attemptedSteps.join(" → ")}.${skippedNote} Last error: ${lastComboError}`
   );
 }
 

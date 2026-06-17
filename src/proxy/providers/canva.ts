@@ -10,6 +10,7 @@ import {
 import type { Account } from "../../db/schema";
 import { config } from "../../config";
 import path from "path";
+import { existsSync } from "fs";
 
 interface CanvaTokens {
   caz: string;
@@ -51,6 +52,23 @@ interface WorkerOutput {
 const WORKER_SCRIPT = path.join(import.meta.dir, "canva_worker.py");
 const WORKER_TIMEOUT_IMAGE = 120_000; // 120s for image (Canva can take 50-80s)
 const WORKER_TIMEOUT_VIDEO = 180_000; // 180s for video
+
+const projectRoot = path.resolve(import.meta.dir, "..");
+
+/** Get Python interpreter that has curl_cffi installed. If main config.pythonPath fails, try scripts/auth/.venv Python. */
+function resolveCanvaPythonPath(): string {
+  const authPythonPath = config.pythonPath; // default from config
+  const venvPath = process.platform === "win32"
+    ? "scripts/auth/.venv/Scripts/python.exe"
+    : "scripts/auth/.venv/bin/python";
+
+  // Check if auth venv exists and curl_cffi is installed there
+  const venvAbsPath = path.resolve(projectRoot, venvPath);
+  if (existsSync(venvAbsPath)) {
+    return venvAbsPath;
+  }
+  return authPythonPath;
+}
 
 /**
  * Canva Provider — Image & Video generation via Magic Media.
@@ -113,7 +131,8 @@ export class CanvaProvider extends BaseProvider {
     await Bun.write(tmpFile, JSON.stringify(input));
 
     try {
-      const proc = Bun.spawn([config.pythonPath, WORKER_SCRIPT], {
+      const pythonPath = resolveCanvaPythonPath();
+      const proc = Bun.spawn([pythonPath, WORKER_SCRIPT], {
         stdin: Bun.file(tmpFile),
         stdout: "pipe",
         stderr: "pipe",

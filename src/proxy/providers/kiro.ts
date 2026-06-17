@@ -650,7 +650,16 @@ export class KiroProvider extends BaseProvider {
 
     const userTextContent = textFromContent(current?.content || "");
     const imageBlocks = extractImageBlocks(current?.content || "").slice(0, 10);
-    const textContent = [systemPrompt, userTextContent].filter(Boolean).join("\n\n");
+    let textContent = [systemPrompt, userTextContent].filter(Boolean).join("\n\n");
+
+    // Kiro has a content length threshold (CONTENT_LENGTH_EXCEEDS_THRESHOLD)
+    // Truncate textContent to ~100K characters to avoid "Input is too long" errors
+    const MAX_CONTENT_LENGTH = 100000; // Conservative estimate
+    if (textContent.length > MAX_CONTENT_LENGTH) {
+      const truncatedContent = textContent.substring(0, MAX_CONTENT_LENGTH);
+      console.log(`[Kiro] Content truncated from ${textContent.length} to ${MAX_CONTENT_LENGTH} characters to avoid CONTENT_LENGTH_EXCEEDS_THRESHOLD error`);
+      textContent = truncatedContent;
+    }
 
     const userInputMessage: Record<string, unknown> = {
       content: textContent,

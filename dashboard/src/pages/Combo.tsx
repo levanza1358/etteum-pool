@@ -67,8 +67,12 @@ interface FormState {
 const RETRY_OPTIONS = [
   { value: "quota_exhausted", label: "Quota Exhausted" },
   { value: "rate_limit", label: "Rate Limited (429)" },
-  { value: "error", label: "Server Error" },
+  { value: "auth_error", label: "Auth Error (401/403)" },
+  { value: "server_error", label: "Server Error (5xx)" },
+  { value: "bad_gateway", label: "Bad Gateway (502/503)" },
+  { value: "overloaded", label: "Overloaded (503/529)" },
   { value: "timeout", label: "Timeout" },
+  { value: "error", label: "Generic Error" },
 ];
 
 const emptyForm: FormState = {
@@ -212,8 +216,8 @@ export default function Combo() {
 
   async function saveForm() {
     if (!form) return;
-    if (!form.triggerModel.trim()) {
-      setMessage("Trigger model is required");
+    if (!form.modelId.trim() && !form.triggerModel.trim()) {
+      setMessage("Model ID atau Trigger Model wajib diisi salah satu");
       return;
     }
     if (form.steps.length === 0 || form.steps.some((s) => !s.provider || !s.model)) {
@@ -222,18 +226,23 @@ export default function Combo() {
     }
 
     try {
+      const payload = {
+        ...form,
+        modelId: form.modelId.trim(),
+        triggerModel: form.triggerModel.trim(),
+      };
       if (form.id) {
         await fetchApi(`/api/combo/${form.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(form),
+          body: JSON.stringify(payload),
         });
         setMessage("Rule updated");
       } else {
         await fetchApi("/api/combo", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(form),
+          body: JSON.stringify(payload),
         });
         setMessage("Rule created");
       }

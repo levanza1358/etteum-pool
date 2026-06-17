@@ -387,6 +387,13 @@ export async function deleteAllAccountsByProvider(provider: string) {
   );
 }
 
+export async function deleteAccountsByStatus(provider: string, status: string) {
+  return fetchApi<{ provider: string; status: string; deleted: number; success: boolean }>(
+    `/api/accounts/provider/${provider}/status/${status}`,
+    { method: "DELETE" },
+  );
+}
+
 export async function toggleAccountEnabled(id: number, enabled?: boolean) {
   return fetchApi<{ id: number; enabled: boolean; status: string; provider: string }>(
     `/api/accounts/${id}/toggle`,

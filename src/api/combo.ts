@@ -132,11 +132,13 @@ comboRouter.post("/import", async (c) => {
 
   const created = [];
   for (const rule of incoming) {
-    if (!rule.triggerModel || !Array.isArray(rule.steps) || rule.steps.length === 0) continue;
+    const modelId = (rule.modelId || "").trim();
+    const triggerModel = (rule.triggerModel || "").trim();
+    if ((!modelId && !triggerModel) || !Array.isArray(rule.steps) || rule.steps.length === 0) continue;
     created.push(await createComboRule({
       name: rule.name || "",
-      modelId: rule.modelId || "",
-      triggerModel: rule.triggerModel,
+      modelId,
+      triggerModel,
       matchType: rule.matchType || "contains",
       steps: rule.steps as any,
       maxRetries: rule.maxRetries ?? 3,
@@ -220,9 +222,11 @@ comboRouter.get("/:id", async (c) => {
  */
 comboRouter.post("/", async (c) => {
   const body = await c.req.json<Partial<NewComboRule>>();
+  const modelId = (body.modelId || "").trim();
+  const triggerModel = (body.triggerModel || "").trim();
 
-  if (!body.triggerModel) {
-    return c.json({ error: "triggerModel is required" }, 400);
+  if (!modelId && !triggerModel) {
+    return c.json({ error: "modelId or triggerModel is required" }, 400);
   }
   if (!body.steps || !Array.isArray(body.steps) || body.steps.length === 0) {
     return c.json({ error: "steps array is required and must not be empty" }, 400);
@@ -237,8 +241,8 @@ comboRouter.post("/", async (c) => {
 
   const rule = await createComboRule({
     name: body.name || "",
-    modelId: body.modelId || "",
-    triggerModel: body.triggerModel,
+    modelId,
+    triggerModel,
     matchType: body.matchType || "contains",
     steps: body.steps,
     maxRetries: body.maxRetries ?? 3,

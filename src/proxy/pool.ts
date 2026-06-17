@@ -71,7 +71,11 @@ class AccountPool {
    * Quick check: does this provider have any active accounts available?
    * Used by combo chain to skip providers that are fully exhausted.
    */
-  async hasActiveAccounts(provider: ProviderName): Promise<boolean> {
+  async hasActiveAccounts(provider: ProviderName, model?: string): Promise<boolean> {
+    if (provider === "byok" && model) {
+      const { getByokProvider } = await import("./providers/registry");
+      return getByokProvider().hasActiveAccountForModel(model);
+    }
     const accounts = await this.getActiveAccounts(provider);
     return accounts.length > 0;
   }
@@ -155,6 +159,42 @@ class AccountPool {
     return Number(account?.quotaRemaining || 0);
   }
 
+  async updateQuotaSnapshot(
+    accountId: number,
+    quota: { limit?: number; remaining?: number; resetAt?: Date | string | null },
+    extras?: { status?: "active" | "exhausted"; errorMessage?: string | null },
+  ): Promise<void> {
+    const [account] = await db
+      .update(accounts)
+      .set({
+        ...(quota.limit !== undefined ? { quotaLimit: quota.limit } : {}),
+        ...(quota.remaining !== undefined ? { quotaRemaining: Math.max(0, Number(quota.remaining || 0)) } : {}),
+        ...(quota.resetAt !== undefined
+          ? { quotaResetAt: quota.resetAt ? new Date(quota.resetAt) : null }
+          : {}),
+        ...(extras?.status !== undefined ? { status: extras.status } : {}),
+        ...(extras?.errorMessage !== undefined ? { errorMessage: extras.errorMessage } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(accounts.id, accountId))
+      .returning();
+
+    if (!account) return;
+    this.invalidate(account.provider as ProviderName);
+    broadcast({
+      type: "account_status",
+      data: {
+        id: accountId,
+        provider: account.provider,
+        status: extras?.status ?? account.status,
+        quotaLimit: quota.limit,
+        quotaRemaining: quota.remaining,
+        quotaResetAt: quota.resetAt ? new Date(quota.resetAt).toISOString() : quota.resetAt,
+        error: extras?.errorMessage,
+      },
+    });
+  }
+
   /**
    * Check and reset daily quota for Qoder accounts.
    * - If quotaLimit === 0: initialize with dailyLimit
@@ -206,6 +246,47 @@ class AccountPool {
     return Number(account.quotaRemaining || 0);
   }
 
+  async checkAndResetCodexQuota(accountId: number): Promise<number> {
+    const [account] = await db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1);
+    if (!account) return 0;
+
+    const now = new Date();
+    const resetAt = account.quotaResetAt ? new Date(account.quotaResetAt) : null;
+    const currentLimit = Math.max(0, Number(account.quotaLimit || 0)) || 100;
+
+    if (account.provider !== "codex") {
+      return Math.max(0, Number(account.quotaRemaining || 0));
+    }
+
+    if (resetAt && now >= resetAt) {
+      const [updated] = await db.update(accounts)
+        .set({
+          status: "active",
+          errorMessage: null,
+          quotaLimit: currentLimit,
+          quotaRemaining: currentLimit,
+          updatedAt: now,
+        })
+        .where(eq(accounts.id, accountId))
+        .returning({ quotaRemaining: accounts.quotaRemaining, provider: accounts.provider });
+
+      this.invalidate("codex");
+      broadcast({
+        type: "account_status",
+        data: {
+          id: accountId,
+          provider: "codex",
+          status: "active",
+          quotaReset: true,
+          quotaRemaining: Number(updated?.quotaRemaining || currentLimit),
+        },
+      });
+      return Number(updated?.quotaRemaining || currentLimit);
+    }
+
+    return Math.max(0, Number(account.quotaRemaining || 0));
+  }
+
   private async getActiveAccounts(provider: ProviderName): Promise<Account[]> {
     const ttlMs = Math.max(0, config.accountCacheTtlMs);
     if (ttlMs === 0) return this.fetchActiveAccounts(provider);
@@ -239,6 +320,23 @@ class AccountPool {
   }
 
   private async fetchActiveAccounts(provider: ProviderName): Promise<Account[]> {
+    if (provider === "codex") {
+      const exhaustedCodex = await db
+        .select({ id: accounts.id })
+        .from(accounts)
+        .where(
+          and(
+            eq(accounts.provider, "codex"),
+            eq(accounts.status, "exhausted"),
+            eq(accounts.enabled, true),
+          )
+        );
+
+      for (const account of exhaustedCodex) {
+        await this.checkAndResetCodexQuota(account.id);
+      }
+    }
+
     const rows = await db
       .select()
       .from(accounts)

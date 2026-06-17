@@ -901,6 +901,24 @@ export class QoderProvider extends BaseProvider {
     }
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
+      const lower = text.toLowerCase();
+      // HTTP 400 with "rate limited" / "quota exceeded" body — treat as exhausted
+      // (Qoder sometimes reports quota issues as 400 BAD_REQUEST instead of 429)
+      if (resp.status === 400 && (lower.includes("rate limit") || lower.includes("quota") || lower.includes("exceed"))) {
+        return {
+          success: false,
+          error: `Qoder HTTP 400 BAD_REQUEST: rate limited or quota exceeded`,
+          quotaExhausted: true,
+        };
+      }
+      if (resp.status === 429) {
+        return {
+          success: false,
+          error: `Qoder HTTP 429: ${text.slice(0, 200) || "rate limited"}`,
+          rateLimited: true,
+          quotaExhausted: true,
+        };
+      }
       return { success: false, error: `Qoder chat HTTP ${resp.status}: ${text.slice(0, 200)}` };
     }
     if (!resp.body) {
@@ -911,15 +929,66 @@ export class QoderProvider extends BaseProvider {
     const id = this.generateId();
     const model = request.model;
     const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const initialReader = upstream.getReader();
+    const prefetchedChunks: Uint8Array[] = [];
+    let prefetchBuffer = "";
+    let sawInitialContent = false;
+
+    // Prefetch initial SSE data so provider-level upstream errors (HTTP 200 with error body)
+    // can fail fast and let router combo-fallback continue to next step.
+    while (!sawInitialContent) {
+      const firstRead = await initialReader.read();
+      if (firstRead.done) break;
+      prefetchedChunks.push(firstRead.value);
+      prefetchBuffer += decoder.decode(firstRead.value, { stream: true });
+      const lines = prefetchBuffer.split("\n");
+      prefetchBuffer = lines.pop() || "";
+
+      for (const raw of lines) {
+        const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+        if (!line || !line.startsWith("data:")) continue;
+        const dataStr = line.slice(5).trim();
+        if (!dataStr || dataStr === "[DONE]") continue;
+
+        try {
+          const wrapper = JSON.parse(dataStr);
+          const svc = wrapper.statusCodeValue;
+          if (svc && svc >= 400) {
+            const errStatus = wrapper.statusCode || "";
+            let errMsg = wrapper.message || "";
+            if (typeof errMsg === "string" && errMsg.startsWith("{")) {
+              try { const p = JSON.parse(errMsg); errMsg = p.pricingUrl || JSON.stringify(p); } catch {}
+            }
+            const lowerErr = String(errMsg || "").toLowerCase();
+            const quotaLike = lowerErr.includes("rate limit") || lowerErr.includes("quota") || lowerErr.includes("exceed");
+            try { initialReader.releaseLock(); } catch {}
+            return {
+              success: false,
+              error: `Qoder HTTP ${svc} ${errStatus}: ${errMsg.slice(0, 200) || "rate limited or quota exceeded"}`,
+              quotaExhausted: svc === 403 || svc === 429 || (svc === 400 && quotaLike),
+              rateLimited: svc === 429 || (svc === 400 && lowerErr.includes("rate limit")),
+            };
+          }
+        } catch {
+          // Ignore non-JSON SSE payloads here.
+        }
+
+        const parsedDelta = parseSseLine(line);
+        if (parsedDelta?.reasoningContent || parsedDelta?.content || parsedDelta?.toolCalls) {
+          sawInitialContent = true;
+          break;
+        }
+      }
+    }
 
     // Track usage across the stream — will be emitted in final chunk
     let accumulatedUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 
     const stream = new ReadableStream<Uint8Array>({
       start: async (controller) => {
-        const reader = upstream.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
+        const reader = initialReader;
+        let buffer = prefetchBuffer;
         let sentRole = false;
         let finishEmitted = false;
         const toolIndex = new Map<string, number>();
@@ -954,6 +1023,49 @@ export class QoderProvider extends BaseProvider {
         };
 
         try {
+          for (const chunk of prefetchedChunks) {
+            if (!streamActive) break;
+            buffer += decoder.decode(chunk, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const raw of lines) {
+              const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+              if (!line) continue;
+
+              const parsedDelta = parseSseLine(line);
+              if (!parsedDelta) continue;
+
+              if (parsedDelta.usage) {
+                accumulatedUsage = parsedDelta.usage;
+              }
+
+              const delta: any = {};
+              if (!sentRole) {
+                if (parsedDelta.reasoningContent || parsedDelta.content || parsedDelta.toolCalls) {
+                  delta.role = "assistant";
+                  sentRole = true;
+                }
+              }
+              if (parsedDelta.reasoningContent) {
+                delta.reasoning_content = parsedDelta.reasoningContent;
+              }
+              if (parsedDelta.content) {
+                delta.content = parsedDelta.content;
+              }
+              if (parsedDelta.toolCalls) {
+                delta.tool_calls = parsedDelta.toolCalls;
+              }
+              if (Object.keys(delta).length > 0) {
+                enqueue(delta);
+              }
+              if (parsedDelta.finishReason) {
+                enqueue({}, parsedDelta.finishReason, accumulatedUsage.total_tokens > 0 ? accumulatedUsage : undefined);
+                finishEmitted = true;
+              }
+            }
+          }
+
           while (streamActive) {
             // Check timeout
             if (Date.now() - lastActivity > STREAM_TIMEOUT) {

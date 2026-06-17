@@ -208,8 +208,44 @@ export function shouldComboRetry(
   if (quotaExhausted && retryOn.has("quota_exhausted")) return true;
   if (rateLimited && retryOn.has("rate_limit")) return true;
 
+  const lower = error.toLowerCase();
+
+  // Auth errors (401, 403)
+  if (retryOn.has("auth_error")) {
+    if (lower.includes("401") || lower.includes("403") || 
+        lower.includes("unauthorized") || lower.includes("forbidden")) {
+      return true;
+    }
+  }
+
+  // Server errors (500, 502, 503, 504)
+  if (retryOn.has("server_error")) {
+    if (lower.includes("500") || lower.includes("502") || 
+        lower.includes("503") || lower.includes("504") ||
+        lower.includes("internal server error") || 
+        lower.includes("service unavailable")) {
+      return true;
+    }
+  }
+
+  // Bad gateway (502, 503)
+  if (retryOn.has("bad_gateway")) {
+    if (lower.includes("502") || lower.includes("503") || 
+        lower.includes("bad gateway")) {
+      return true;
+    }
+  }
+
+  // Overloaded (503, 529)
+  if (retryOn.has("overloaded")) {
+    if (lower.includes("503") || lower.includes("529") || 
+        lower.includes("overloaded") || lower.includes("too busy")) {
+      return true;
+    }
+  }
+
+  // Timeout
   if (retryOn.has("timeout")) {
-    const lower = error.toLowerCase();
     if (
       lower.includes("timeout") ||
       lower.includes("etimedout") ||
@@ -219,9 +255,18 @@ export function shouldComboRetry(
     }
   }
 
+  // Custom HTTP status codes (format: http_XXX)
+  for (const condition of rule.retryOn) {
+    if (condition.startsWith("http_")) {
+      const code = condition.substring(5); // "http_503" -> "503"
+      if (lower.includes(code)) {
+        return true;
+      }
+    }
+  }
+
+  // Generic error fallback
   if (retryOn.has("error")) {
-    // Generic error — retry on anything that isn't a content/model issue
-    const lower = error.toLowerCase();
     const isContentIssue =
       lower.includes("moderation") ||
       lower.includes("invalid_model") ||

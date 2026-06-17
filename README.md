@@ -10,11 +10,15 @@
 
 ## Features
 
-- **Multi-Provider Support** — Kiro, Kiro Pro, CodeBuddy, Codex, Canva, Qoder
+- **Multi-Provider Support** — Kiro, Kiro Pro, CodeBuddy, Codex, Canva, Qoder, BYOK
 - **Automatic Load Balancing** — Round-robin or sequential distribution across healthy accounts
 - **Credit Tracking** — Real-time quota monitoring and exhaustion detection
 - **Auto-Warmup** — Periodic health checks to keep accounts ready
 - **Token Compression** — RTK / DCP / Caveman / Cache Markers / Image Dedupe pipeline ([docs](docs/compression.md))
+- **Combo Fallback** — Multi-provider chain with skip-aware retries, cooldowns, and per-step timeout ([docs](docs/combo.md))
+- **Account Management** — Bulk delete by status (exhausted/error/all), warmup, retry, toggle ([docs](docs/accounts.md))
+- **Qoder Hardening** — Detects HTTP-200 SSE errors and HTTP 400 quota responses, marks accounts exhausted automatically ([docs](docs/qoder.md))
+- **Auto-Recover** — When pool is empty (e.g. Codex), router triggers a quick warmup pass to wake exhausted accounts whose quota window has reset ([docs](docs/auto-recover.md))
 - **Dashboard** — Beautiful web UI for monitoring and management
 - **Account Filter** — Bulk check which accounts are missing per provider, with one-click add
 - **Multi-Select Actions** — Select multiple accounts for bulk retry, warmup, enable/disable, delete
@@ -341,6 +345,8 @@ echo "DASHBOARD_PORT=1941" >> .env
 - Wait for auto-warmup to refresh credits
 - Click **Warmup** button manually
 - Check provider's quota limits
+- Use **Delete Exhausted** in provider account list if you want to purge dead accounts fast
+- See [`docs/accounts.md`](docs/accounts.md) and [`docs/qoder.md`](docs/qoder.md) for status handling details
 
 ---
 

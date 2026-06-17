@@ -53,7 +53,7 @@ async function buildDashboard() {
     }
 
     console.log("[production] Building dashboard...");
-    const proc = Bun.spawn([bunExecutable, "run", "build"], {
+    let proc = Bun.spawn([bunExecutable, "run", "build"], {
       cwd: dashboardDir,
       stdout: "inherit",
       stderr: "inherit",
@@ -62,8 +62,28 @@ async function buildDashboard() {
         VITE_BACKEND_PORT: port,
       },
     });
-    const code = await proc.exited;
+    let code = await proc.exited;
+
     if (code !== 0) {
+      console.warn("[production] Normal dashboard build failed; retrying without emptying dist...");
+      proc = Bun.spawn([bunExecutable, "x", "vite", "build", "--emptyOutDir=false"], {
+        cwd: dashboardDir,
+        stdout: "inherit",
+        stderr: "inherit",
+        env: {
+          ...process.env,
+          VITE_BACKEND_PORT: port,
+        },
+      });
+      code = await proc.exited;
+    }
+
+    if (code !== 0) {
+      if (distExists) {
+        console.warn("[production] Dashboard build failed, using existing dist output.");
+        console.warn("[production] If the UI looks stale, close any process locking dashboard/dist and rebuild later.");
+        return;
+      }
       console.error("[production] Dashboard build failed!");
       process.exit(1);
     }

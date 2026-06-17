@@ -10,6 +10,7 @@ import { useTimedMessage } from "@/hooks/useTimedMessage";
 import { useWsEvent } from "@/hooks/useWebSocket";
 import {
   deleteAccount,
+  deleteAccountsByStatus,
   deleteAllAccountsByProvider,
   fetchAccounts,
   loginAccount,
@@ -334,6 +335,22 @@ export default function AccountList() {
     }
   }
 
+  async function handleDeleteByStatus(status: "exhausted" | "error") {
+    if (!provider) return;
+    const count = accounts.filter((a) => a.status === status).length;
+    if (count === 0) return;
+    const label = labelProvider(provider);
+    if (!confirm(`Delete ${count} ${status} ${label} accounts? This cannot be undone.`)) return;
+    try {
+      const res = await deleteAccountsByStatus(provider, status);
+      setSelectedIds(new Set());
+      showSuccess(`Deleted ${res.deleted} ${status} accounts.`);
+      await load();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
   async function handleToggle(id: number, currentEnabled: boolean) {
     const next = !currentEnabled;
     setAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, enabled: next } : a)));
@@ -499,6 +516,7 @@ export default function AccountList() {
   useEffect(() => { setPage(1); }, [search, provider, statusFilter]);
 
   const errorCount = accounts.filter((a) => a.status === "error").length;
+  const exhaustedCount = accounts.filter((a) => a.status === "exhausted").length;
   const enabledCount = accounts.filter((a) => a.enabled !== false).length;
   const disabledCount = accounts.filter((a) => a.enabled === false).length;
 
@@ -530,6 +548,12 @@ export default function AccountList() {
           </Button>
           <Button variant="outline" size="sm" onClick={() => handleToggleAll(false)} disabled={enabledCount === 0}>
             <XCircle className="w-4 h-4 mr-2 text-[var(--error)]" /> Disable All ({enabledCount})
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => handleDeleteByStatus("exhausted")} disabled={exhaustedCount === 0}>
+            <Trash2 className="w-4 h-4 mr-2 text-[var(--warning)]" /> Delete Exhausted ({exhaustedCount})
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => handleDeleteByStatus("error")} disabled={errorCount === 0}>
+            <Trash2 className="w-4 h-4 mr-2 text-[var(--error)]" /> Delete Error ({errorCount})
           </Button>
           <Button variant="outline" size="sm" onClick={handleDeleteAllProvider} disabled={accounts.length === 0}>
             <Trash2 className="w-4 h-4 mr-2 text-[var(--error)]" /> Delete All ({accounts.length})

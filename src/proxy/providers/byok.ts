@@ -122,7 +122,7 @@ export class ByokProvider extends BaseProvider {
           id: modelId,
           object: "model",
           created: Math.floor(Date.now() / 1000),
-          owned_by: `byok:${prefix}`,
+          owned_by: "byok",
           context_window: 200_000,
           max_output: 8192,
         });
@@ -244,6 +244,15 @@ export class ByokProvider extends BaseProvider {
     const idx = (this.prefixRoundRobin.get(prefix) || 0) % active.length;
     this.prefixRoundRobin.set(prefix, idx + 1);
     return active[idx]!.account;
+  }
+
+  async hasActiveAccountForModel(model: string): Promise<boolean> {
+    await this.ensureCache();
+    const prefix = this.findPrefix(model);
+    if (!prefix) return false;
+
+    const allAccounts = this.prefixAccounts.get(prefix) || [];
+    return allAccounts.some((entry) => entry.account.enabled && entry.account.status === "active");
   }
 
   /** Get all BYOK models for /v1/models endpoint. */

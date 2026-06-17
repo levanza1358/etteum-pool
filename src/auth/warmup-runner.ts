@@ -1,6 +1,6 @@
 import { db } from "../db/index";
 import { accounts, type Account } from "../db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and, inArray, ne } from "drizzle-orm";
 import { providers } from "../proxy/router";
 import { pool, type ProviderName } from "../proxy/pool";
 import { broadcast } from "../ws/index";
@@ -71,9 +71,9 @@ export function mapHealthToAccountUpdate(account: Account, health: ProviderHealt
 
   switch (health.kind) {
     case "healthy":
+      errorMessage = null;
       if (!skipStatusUpdate) {
         status = "active";
-        errorMessage = null;
       }
       break;
     case "exhausted":
@@ -215,11 +215,13 @@ export async function warmupAccount(account: Account): Promise<WarmupResult> {
   }
 
   // For qoder accounts: server-reported quota=0 doesn't always mean truly exhausted.
-  // Probe inference with the cheapest model (qd-Lite, price_factor=0) to confirm.
+  // Probe inference with a billable low-cost model so warmup reflects real
+  // availability better than qd-Lite, which can pass while normal models still
+  // fail upstream.
   if (health.kind === "exhausted" && account.provider === "qoder") {
     try {
       const probeResult = await provider.chatCompletion(account, {
-        model: "qd-Lite",
+        model: "qd-Efficient",
         messages: [{ role: "user", content: "Say OK" }],
         max_tokens: 4,
       });
@@ -238,6 +240,26 @@ export async function warmupAccount(account: Account): Promise<WarmupResult> {
   }
 
   const update = mapHealthToAccountUpdate(account, health);
+
+  if (account.provider === "qoder" && health.kind === "healthy") {
+    await pool.checkAndResetDailyQuota(account.id, 200);
+
+    const [refreshedQuota] = await db
+      .select({
+        quotaLimit: accounts.quotaLimit,
+        quotaRemaining: accounts.quotaRemaining,
+        quotaResetAt: accounts.quotaResetAt,
+      })
+      .from(accounts)
+      .where(eq(accounts.id, account.id))
+      .limit(1);
+
+    if (refreshedQuota) {
+      update.quotaLimit = Number(refreshedQuota.quotaLimit || 0);
+      update.quotaRemaining = Math.max(0, Number(refreshedQuota.quotaRemaining || 0));
+      update.quotaResetAt = refreshedQuota.quotaResetAt ?? null;
+    }
+  }
 
   const dbUpdate: Record<string, unknown> = {
     status: update.status,
@@ -320,4 +342,117 @@ export async function warmupAccount(account: Account): Promise<WarmupResult> {
   });
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-recover: cek-quota-lalu-aktifkan-ulang akun exhausted/error
+// untuk provider tertentu saat router butuh slot.
+// ---------------------------------------------------------------------------
+
+interface AutoRecoverState {
+  inFlight: Promise<number> | null;
+  lastRunAt: number;
+}
+
+const autoRecoverState = new Map<string, AutoRecoverState>();
+
+const AUTO_RECOVER_COOLDOWN_MS = 30_000; // 30 detik antar pemicu untuk provider yang sama
+const AUTO_RECOVER_BATCH_LIMIT = 8;       // maksimal akun yang dicek dalam satu putaran
+const AUTO_RECOVER_TIMEOUT_MS = 12_000;   // batas waktu menunggu hasil
+
+/**
+ * Coba "membangunkan" akun exhausted/error untuk provider tertentu.
+ *
+ * Mekanisme: jalankan `warmupAccount()` untuk batch akun terlama-tidak-pernah-dipakai.
+ * `warmupAccount` memanggil `provider.healthCheck()`. Jika `fetchQuota` mengembalikan
+ * `remaining > 0` (window quota sudah reset), `mapHealthToAccountUpdate` akan
+ * mengubah status menjadi `active` lagi.
+ *
+ * Aman dipanggil dari hot path: throttled per provider, dibatasi batch & timeout,
+ * dan tidak pernah throw — return jumlah akun yang berhasil di-recover (`active`).
+ */
+export async function tryAutoRecoverProvider(provider: ProviderName): Promise<number> {
+  const state = autoRecoverState.get(provider) || { inFlight: null, lastRunAt: 0 };
+
+  if (state.inFlight) {
+    // Sudah ada putaran berjalan — ikut hasilnya.
+    return state.inFlight;
+  }
+
+  const now = Date.now();
+  if (now - state.lastRunAt < AUTO_RECOVER_COOLDOWN_MS) {
+    return 0; // throttled
+  }
+
+  const run = (async () => {
+    try {
+      const candidates = await db
+        .select()
+        .from(accounts)
+        .where(
+          and(
+            eq(accounts.provider, provider),
+            inArray(accounts.status, ["exhausted", "error"]),
+            ne(accounts.enabled, false),
+          ),
+        )
+        .limit(AUTO_RECOVER_BATCH_LIMIT);
+
+      if (candidates.length === 0) return 0;
+
+      console.log(
+        `[AutoRecover] ${provider}: probing ${candidates.length} exhausted/error account(s)…`,
+      );
+
+      let recovered = 0;
+      const tasks = candidates.map(async (account) => {
+        try {
+          const result = await Promise.race([
+            warmupAccount(account),
+            new Promise<WarmupResult>((_, reject) =>
+              setTimeout(() => reject(new Error("auto-recover timeout")), AUTO_RECOVER_TIMEOUT_MS),
+            ),
+          ]);
+          if (result.status === "active" && result.previousStatus !== "active") {
+            recovered++;
+          }
+        } catch {
+          // swallow — best effort
+        }
+      });
+
+      await Promise.all(tasks);
+
+      if (recovered > 0) {
+        pool.invalidate(provider);
+        console.log(`[AutoRecover] ${provider}: recovered ${recovered} account(s).`);
+      } else {
+        console.log(`[AutoRecover] ${provider}: no accounts ready yet.`);
+      }
+      return recovered;
+    } catch (err) {
+      console.warn(
+        `[AutoRecover] ${provider} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 0;
+    }
+  })();
+
+  state.inFlight = run;
+  state.lastRunAt = now;
+  autoRecoverState.set(provider, state);
+
+  try {
+    return await run;
+  } finally {
+    state.inFlight = null;
+    autoRecoverState.set(provider, state);
+  }
+}
+
+/** Provider yang ikut auto-recover saat pool kosong di router. */
+export const AUTO_RECOVER_PROVIDERS: ProviderName[] = ["codex"];
+
+export function isAutoRecoverProvider(provider: ProviderName): boolean {
+  return AUTO_RECOVER_PROVIDERS.includes(provider);
 }

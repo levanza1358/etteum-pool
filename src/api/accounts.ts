@@ -878,6 +878,48 @@ accountsRouter.post("/toggle-all", async (c) => {
 });
 
 /**
+ * DELETE /api/accounts/provider/:provider/status/:status - Delete accounts by provider + status
+ * status can be: "exhausted" | "error" | "active" | "transient"
+ */
+accountsRouter.delete("/provider/:provider/status/:status", async (c) => {
+  const provider = c.req.param("provider") as ProviderName;
+  const status = c.req.param("status");
+
+  if (!provider) {
+    return c.json({ error: "provider is required" }, 400);
+  }
+  if (!status) {
+    return c.json({ error: "status is required" }, 400);
+  }
+
+  const targetAccounts = await db
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(and(eq(accounts.provider, provider), eq(accounts.status, status)));
+
+  const ids = targetAccounts.map((a) => a.id);
+  if (ids.length === 0) {
+    return c.json({ provider, status, deleted: 0, success: true });
+  }
+
+  for (const id of ids) {
+    await db.update(requestLogs).set({ accountId: null }).where(eq(requestLogs.accountId, id));
+    await db.update(vccCards).set({ usedByAccountId: null }).where(eq(vccCards.usedByAccountId, id));
+    await db.delete(vccTransactions).where(eq(vccTransactions.accountId, id));
+  }
+
+  const deleted = await db
+    .delete(accounts)
+    .where(and(eq(accounts.provider, provider), eq(accounts.status, status)))
+    .returning({ id: accounts.id });
+
+  pool.invalidate(provider);
+  broadcast({ type: "accounts_updated", data: { provider, status, deleted: deleted.length } });
+
+  return c.json({ provider, status, deleted: deleted.length, success: true });
+});
+
+/**
  * DELETE /api/accounts/provider/:provider - Delete all accounts for a provider
  */
 accountsRouter.delete("/provider/:provider", async (c) => {
