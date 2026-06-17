@@ -28,6 +28,117 @@ function Get-EnvValue([string]$key, [string]$default) {
   return $default
 }
 
+function Set-EnvValue([string]$key, [string]$value) {
+  $escapedKey = [regex]::Escape($key)
+  if (-not (Test-Path $EnvFile)) {
+    Set-Content -Path $EnvFile -Value "${key}=${value}"
+    return
+  }
+
+  $content = Get-Content $EnvFile -Raw
+  if ($content -match "(?m)^${escapedKey}=") {
+    $updated = [regex]::Replace($content, "(?m)^${escapedKey}=.*$", "${key}=${value}")
+    Set-Content -Path $EnvFile -Value $updated
+  } else {
+    if ($content.Length -gt 0 -and -not $content.EndsWith("`r`n") -and -not $content.EndsWith("`n")) {
+      Add-Content -Path $EnvFile -Value ""
+    }
+    Add-Content -Path $EnvFile -Value "${key}=${value}"
+  }
+}
+
+function Get-PythonCommand {
+  if (Get-Command py -ErrorAction SilentlyContinue) { return "py" }
+  if (Get-Command python -ErrorAction SilentlyContinue) { return "python" }
+  if (Get-Command python3 -ErrorAction SilentlyContinue) { return "python3" }
+  return $null
+}
+
+function Ensure-AuthPython {
+  $authDir = Join-Path $ProjectDir "scripts\auth"
+  $venvDir = Join-Path $authDir ".venv"
+  $venvPy = Join-Path $venvDir "Scripts\python.exe"
+  $venvPip = Join-Path $venvDir "Scripts\pip.exe"
+  $requirementsFile = Join-Path $authDir "requirements.txt"
+  $configuredPython = Get-EnvValue "PYTHON_PATH" ""
+
+  if ($configuredPython -and -not [System.IO.Path]::IsPathRooted($configuredPython)) {
+    $configuredPython = Join-Path $ProjectDir $configuredPython
+  }
+
+  if ((Test-Path $venvPy) -and ((-not $configuredPython) -or ($configuredPython -eq $venvPy))) {
+    # Cek apakah dependency penting sudah ada
+    try {
+      & $venvPy -c "import curl_cffi, playwright, camoufox" 2>&1 | Out-Null
+      Write-Host "Auth Python siap: $venvPy" -ForegroundColor Green
+      return $true
+    } catch {
+      Write-Host "Auth Python dependency belum lengkap. Memperbaiki..." -ForegroundColor Yellow
+    }
+  }
+
+  Write-Host "Auth Python belum siap. Memperbaiki environment Canva..." -ForegroundColor Yellow
+
+  $pythonCmd = Get-PythonCommand
+  if (-not $pythonCmd) {
+    Write-Host "Python tidak ditemukan di PATH. Jalankan install.ps1 dulu atau install Python 3.11+." -ForegroundColor Red
+    return $false
+  }
+
+  if (-not (Test-Path $authDir)) {
+    Write-Host "Folder auth tidak ditemukan: $authDir" -ForegroundColor Red
+    return $false
+  }
+
+  if (-not (Test-Path $venvPy)) {
+    Write-Host "Membuat virtual environment auth..."
+    & $pythonCmd -m venv $venvDir
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPy)) {
+      Write-Host "Gagal membuat virtual environment di $venvDir" -ForegroundColor Red
+      return $false
+    }
+  }
+
+  if (-not (Test-Path $venvPip)) {
+    Write-Host "pip tidak ditemukan di venv: $venvPip" -ForegroundColor Red
+    return $false
+  }
+
+  Write-Host "Menginstall dependency Python auth..."
+  & $venvPip install --upgrade pip wheel
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Gagal upgrade pip pada auth venv" -ForegroundColor Red
+    return $false
+  }
+
+  & $venvPip install -r $requirementsFile
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Gagal install dependency Python auth dari $requirementsFile" -ForegroundColor Red
+    return $false
+  }
+
+  Write-Host "Menginstall browser Playwright..."
+  & $venvPy -m playwright install chromium
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Gagal install Playwright Chromium" -ForegroundColor Red
+    return $false
+  }
+
+  Write-Host "Mengambil browser Camoufox..."
+  & $venvPy -m camoufox fetch
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Gagal fetch Camoufox" -ForegroundColor Red
+    return $false
+  }
+
+  Set-EnvValue "PYTHON_PATH" $venvPy
+  Set-EnvValue "AUTH_SCRIPT_CWD" "./scripts/auth"
+  Set-EnvValue "AUTH_SCRIPT_PATH" "./scripts/auth/login.py"
+
+  Write-Host "Auth Python siap: $venvPy" -ForegroundColor Green
+  return $true
+}
+
 function Test-Running {
   if (-not (Test-Path $PidFile)) { return $false }
   $procId = Get-Content $PidFile -ErrorAction SilentlyContinue
@@ -51,6 +162,11 @@ function Test-PortInUse([int]$port) {
 function Invoke-Start {
   $apiPort = [int](Get-EnvValue "PORT" "1930")
   $dashPort = [int](Get-EnvValue "DASHBOARD_PORT" "1931")
+
+  if (-not (Ensure-AuthPython)) {
+    Write-Host "Start dibatalkan karena environment auth belum siap." -ForegroundColor Red
+    return
+  }
 
   if (Test-PortInUse $apiPort) {
     Write-Host "Port $apiPort already in use. Run: .\etteum.ps1 stop" -ForegroundColor Red
