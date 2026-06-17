@@ -73,12 +73,19 @@ accountsRouter.get("/", async (c) => {
 
   const allAccounts = await query;
 
-  // Don't expose passwords in response
-  const sanitized = allAccounts.map((acc) => ({
-    ...acc,
-    password: "***",
-    tokens: acc.tokens ? "[set]" : null,
-  }));
+  // Don't expose passwords in response (except BYOK where key is shown)
+  const sanitized = allAccounts.map((acc) => {
+    let apiKeyPreview: string | undefined;
+    if (acc.provider === "byok") {
+      try { apiKeyPreview = decrypt(acc.password); } catch { /* ignore */ }
+    }
+    return {
+      ...acc,
+      password: "***",
+      tokens: acc.tokens ? "[set]" : null,
+      apiKeyPreview,
+    };
+  });
 
   return c.json({ data: sanitized, total: sanitized.length });
 });

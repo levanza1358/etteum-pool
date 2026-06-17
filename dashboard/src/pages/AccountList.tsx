@@ -21,7 +21,7 @@ import {
   warmupAllAccounts,
 } from "@/lib/api";
 
-type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder";
+type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder" | "byok";
 type Status = "active" | "exhausted" | "error" | "pending" | "disabled";
 
 interface CodexQuotaWindow {
@@ -60,6 +60,7 @@ interface Account {
     overage?: { enabled: boolean; capable: boolean; used: number; cap: number; remaining: number } | null;
     inferenceProbe?: string;
   } | null;
+  apiKeyPreview?: string;
 }
 
 const statusVariants: Record<string, "success" | "warning" | "error" | "secondary"> = {
@@ -71,7 +72,10 @@ const statusVariants: Record<string, "success" | "warning" | "error" | "secondar
 };
 
 function labelProvider(provider: string) {
-  return provider === "codebuddy" ? "CodeBuddy" : provider.charAt(0).toUpperCase() + provider.slice(1);
+  if (provider === "codebuddy") return "CodeBuddy";
+  if (provider === "byok") return "BYOK";
+  if (provider === "kiro-pro") return "Kiro Pro";
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
 function formatCredit(value?: number | null) {
@@ -618,7 +622,14 @@ export default function AccountList() {
                           : <Square className="w-4 h-4" />}
                       </button>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-[var(--foreground)] truncate" title={account.email}>{account.email}</p>
+                        <p className="text-sm font-medium text-[var(--foreground)] truncate" title={account.apiKeyPreview || account.email}>
+                          {account.email}
+                          {account.apiKeyPreview && (
+                            <span className="block text-xs font-mono text-[var(--muted-foreground)] truncate mt-0.5" title={account.apiKeyPreview}>
+                              {account.apiKeyPreview.slice(0, 12)}...{account.apiKeyPreview.slice(-6)}
+                            </span>
+                          )}
+                        </p>
                         {account.errorMessage && (
                           <p className="text-[10px] text-[var(--error)] mt-0.5 line-clamp-1" title={account.errorMessage}>{account.errorMessage}</p>
                         )}
@@ -746,7 +757,14 @@ export default function AccountList() {
                       </button>
                     </td>
                     <td className="p-4 text-sm text-[var(--foreground)]">
-                      <div>{account.email}</div>
+                      <div>
+                        {account.email}
+                        {account.apiKeyPreview && (
+                          <div className="text-[10px] font-mono text-[var(--muted-foreground)] truncate mt-0.5" title={account.apiKeyPreview}>
+                            {account.apiKeyPreview.slice(0, 12)}...{account.apiKeyPreview.slice(-6)}
+                          </div>
+                        )}
+                      </div>
                       {account.errorMessage && <div className="text-xs text-[var(--error)] mt-1 line-clamp-1" title={account.errorMessage}>{account.errorMessage}</div>}
                     </td>
                     <td className="p-4"><Badge variant={statusVariants[account.status]}>{account.status}</Badge></td>
