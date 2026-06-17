@@ -929,9 +929,14 @@ export default function Accounts() {
               <p className="text-sm text-[var(--muted-foreground)]">Bring Your Own Key — use your own API providers</p>
             </div>
           </div>
-          <Button onClick={() => setByokDialogOpen(true)} className="gap-2 shadow-sm">
-            <Plus className="h-4 w-4" /> Add Provider
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => navigate("/accounts/byok")} className="gap-2">
+              View All Keys
+            </Button>
+            <Button onClick={() => setByokDialogOpen(true)} className="gap-2 shadow-sm">
+              <Plus className="h-4 w-4" /> Add Provider
+            </Button>
+          </div>
         </div>
 
         {byokProviders.length === 0 ? (
