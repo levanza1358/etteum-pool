@@ -55,7 +55,7 @@ interface Account {
   quotaRemaining?: number;
 }
 
-const providers: Provider[] = ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder", "byok"];
+const providers: Provider[] = ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder"];
 
 function labelProvider(provider: string) {
   if (provider === "kiro-pro") return "Kiro Pro";
